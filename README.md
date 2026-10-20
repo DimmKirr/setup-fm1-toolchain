@@ -25,13 +25,15 @@ The action sets these environment variables:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `v1.0.0` | Bundle version (GitHub Release tag) |
+| `release-version` | `v1.0.0` | Bundle release version (GitHub Release tag) |
 | `github-token` | `github.token` | Token for downloading release assets |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
+| `sdk-version` | SDK version included in the installed bundle |
+| `toolchain-version` | Toolchain version included in the installed bundle |
 | `toolchain-path` | Absolute path to the toolchain |
 | `sdk-path` | Absolute path to the SDK |
 | `cache-hit` | Whether the bundle was restored from cache |
@@ -62,7 +64,12 @@ FM1_TOOLCHAIN_HOME=/opt/fm1 bash install.sh
 
 ## Versioning
 
-Upstream versions are pinned in `versions.env`. The cron workflow (`track.yml`) monitors for updates and creates PRs. After merging a version bump, tag `vX.Y.Z` to trigger packaging.
+Two version axes:
+
+- **Action version** (`@v1`): the action code. Consumers pin to the major tag.
+- **Release version** (`release-version: v1.0.0`): which SDK + toolchain bundle to install. Each release bundles a specific SDK and toolchain, visible in the release title and asset filename.
+
+Upstream versions are pinned in `versions.env`. The cron workflow (`track.yml`) monitors for updates and creates PRs. After merging a version bump, tag `vX.Y.Z` to trigger packaging and create the release.
 
 ## License
 

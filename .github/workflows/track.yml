@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Load current pinned versions
         id: current
@@ -78,7 +78,6 @@ jobs:
           if [ "${{ steps.sdk.outputs.new }}" = "true" ]; then
             NEW_TAG="${{ steps.sdk.outputs.latest }}"
             sed -i "s/^SDK_TAG=.*/SDK_TAG=$NEW_TAG/" versions.env
-            sed -i "s/^SDK_COMMIT=.*/SDK_COMMIT=NEEDS_VERIFICATION/" versions.env
           fi
 
           source versions.env
@@ -105,7 +104,7 @@ jobs:
           **SDK:** ${{ steps.current.outputs.sdk-tag }} -> ${{ steps.sdk.outputs.latest }} (new: ${{ steps.sdk.outputs.new }})
           **Toolchain:** ${{ steps.toolchain.outputs.latest }} (new: ${{ steps.toolchain.outputs.new }})
 
-          After merging, tag \`v${NEW_BUNDLE}\` to trigger packaging.
+          After merging, tag \`v${NEW_BUNDLE}\` to trigger packaging and create the release.
           PREOF
           )" \
             --base main \

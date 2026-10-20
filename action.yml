@@ -5,8 +5,8 @@ branding:
   color: 'blue'
 
 inputs:
-  version:
-    description: 'Toolchain bundle version (matches GitHub Release tag, e.g. v1.0.0)'
+  release-version:
+    description: 'Bundle release version to install (e.g. v1.0.0). Each release bundles a specific SDK + toolchain.'
     required: false
     default: 'v1.0.0'
   github-token:
@@ -15,6 +15,12 @@ inputs:
     default: ${{ github.token }}
 
 outputs:
+  sdk-version:
+    description: 'SDK version included in the installed bundle'
+    value: ${{ steps.setup.outputs.sdk-version }}
+  toolchain-version:
+    description: 'Toolchain version included in the installed bundle'
+    value: ${{ steps.setup.outputs.toolchain-version }}
   toolchain-path:
     description: 'Path to the JieLi toolchain directory'
     value: ${{ steps.setup.outputs.toolchain-path }}
@@ -33,29 +39,28 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.fm1-toolchain
-        key: fm1-toolchain-${{ inputs.version }}
+        key: fm1-toolchain-${{ inputs.release-version }}
 
     - name: Download and extract toolchain bundle
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        VERSION: ${{ inputs.release-version }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
         REPO="${{ github.action_repository || 'dimmkirr/setup-fm1-toolchain' }}"
-        BUNDLE_VERSION="${VERSION#v}"
-        ASSET="fm1-toolchain-${BUNDLE_VERSION}.tar.xz"
 
-        echo "Downloading $ASSET from $REPO release $VERSION..."
+        echo "Downloading bundle from $REPO release $VERSION..."
         gh release download "$VERSION" \
           --repo "$REPO" \
-          --pattern "$ASSET" \
+          --pattern "fm1-toolchain-*.tar.xz" \
           --dir /tmp/fm1-download
 
-        echo "Extracting to ~/.fm1-toolchain..."
+        ASSET=$(ls /tmp/fm1-download/fm1-toolchain-*.tar.xz)
+        echo "Extracting $ASSET to ~/.fm1-toolchain..."
         mkdir -p ~/.fm1-toolchain
-        tar -xJf "/tmp/fm1-download/$ASSET" --strip-components=1 -C ~/.fm1-toolchain
+        tar -xJf "$ASSET" --strip-components=1 -C ~/.fm1-toolchain
         rm -rf /tmp/fm1-download
 
     - name: Set environment variables
@@ -68,13 +73,19 @@ runs:
         test -d "$INSTALL_DIR/toolchain" || { echo "Toolchain not found at $INSTALL_DIR/toolchain"; exit 1; }
         test -d "$INSTALL_DIR/AC79_SDK"  || { echo "SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
 
+        source "$INSTALL_DIR/versions.env"
+
         echo "JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain" >> "$GITHUB_ENV"
         echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"         >> "$GITHUB_ENV"
         echo "$INSTALL_DIR/toolchain/bin"              >> "$GITHUB_PATH"
 
-        echo "toolchain-path=$INSTALL_DIR/toolchain" >> "$GITHUB_OUTPUT"
-        echo "sdk-path=$INSTALL_DIR/AC79_SDK"        >> "$GITHUB_OUTPUT"
+        echo "toolchain-path=$INSTALL_DIR/toolchain"               >> "$GITHUB_OUTPUT"
+        echo "sdk-path=$INSTALL_DIR/AC79_SDK"                      >> "$GITHUB_OUTPUT"
+        echo "sdk-version=$SDK_TAG"                                >> "$GITHUB_OUTPUT"
+        echo "toolchain-version=${TOOLCHAIN_ACTUAL_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
 
         echo "FM1 toolchain ready:"
         echo "  JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain"
         echo "  AC79_SDK=$INSTALL_DIR/AC79_SDK"
+        echo "  SDK version: $SDK_TAG"
+        echo "  Toolchain version: ${TOOLCHAIN_ACTUAL_VERSION:-unknown}"
