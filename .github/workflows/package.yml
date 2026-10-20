@@ -129,7 +129,7 @@ jobs:
         run: |
           MAJOR=$(echo "$GITHUB_REF_NAME" | grep -oP '^v\d+')
           gh api -X PATCH repos/${{ github.repository }}/git/refs/tags/"$MAJOR" \
-            -f sha="$(git rev-parse HEAD)" -f force=true 2>/dev/null \
+            -f sha="$(git rev-parse HEAD)" -F force=true 2>/dev/null \
           || gh api -X POST repos/${{ github.repository }}/git/refs \
             -f ref="refs/tags/$MAJOR" -f sha="$(git rev-parse HEAD)"
 
