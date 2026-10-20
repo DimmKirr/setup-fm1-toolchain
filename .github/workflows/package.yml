@@ -14,7 +14,7 @@ jobs:
   package:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
 
@@ -22,6 +22,10 @@ jobs:
         run: |
           set -euo pipefail
           source versions.env
+          # Derive bundle version from the git tag (v1.0.2 -> 1.0.2), fall back to versions.env
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9] ]]; then
+            BUNDLE_VERSION="${GITHUB_REF_NAME#v}"
+          fi
           echo "SDK_TAG=$SDK_TAG"               >> "$GITHUB_ENV"
           echo "SDK_REPO=$SDK_REPO"             >> "$GITHUB_ENV"
           echo "TOOLCHAIN_URL=$TOOLCHAIN_URL"   >> "$GITHUB_ENV"
@@ -116,7 +120,7 @@ jobs:
 
       - name: Attest release assets
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
             ${{ env.BUNDLE_FILE }}
@@ -133,7 +137,7 @@ jobs:
           || gh api -X POST repos/${{ github.repository }}/git/refs \
             -f ref="refs/tags/$MAJOR" -f sha="$(git rev-parse HEAD)"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: fm1-toolchain-bundle
           path: |
