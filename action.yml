@@ -70,16 +70,16 @@ runs:
         set -euo pipefail
         INSTALL_DIR="$HOME/.fm1-toolchain"
 
-        test -d "$INSTALL_DIR/toolchain" || { echo "Toolchain not found at $INSTALL_DIR/toolchain"; exit 1; }
-        test -d "$INSTALL_DIR/AC79_SDK"  || { echo "SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
+        test -d "$INSTALL_DIR/toolchain/pi32v2" || { echo "Toolchain not found at $INSTALL_DIR/toolchain/pi32v2"; exit 1; }
+        test -d "$INSTALL_DIR/AC79_SDK"          || { echo "SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
 
         source "$INSTALL_DIR/versions.env"
 
-        echo "JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain" >> "$GITHUB_ENV"
-        echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"         >> "$GITHUB_ENV"
-        echo "$INSTALL_DIR/toolchain/bin"              >> "$GITHUB_PATH"
+        echo "JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain/pi32v2" >> "$GITHUB_ENV"
+        echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"                >> "$GITHUB_ENV"
+        echo "$INSTALL_DIR/toolchain/pi32v2/bin"             >> "$GITHUB_PATH"
 
-        echo "toolchain-path=$INSTALL_DIR/toolchain"               >> "$GITHUB_OUTPUT"
+        echo "toolchain-path=$INSTALL_DIR/toolchain/pi32v2"        >> "$GITHUB_OUTPUT"
         echo "sdk-path=$INSTALL_DIR/AC79_SDK"                      >> "$GITHUB_OUTPUT"
         echo "sdk-version=$SDK_TAG"                                >> "$GITHUB_OUTPUT"
         echo "toolchain-version=${TOOLCHAIN_ACTUAL_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
