@@ -95,7 +95,7 @@ jobs:
       - name: Bundle into tar.xz
         run: |
           set -euo pipefail
-          tar -cJf "${BUNDLE_NAME}.tar.xz" "$BUNDLE_NAME"
+          tar -cf - "$BUNDLE_NAME" | xz -T0 > "${BUNDLE_NAME}.tar.xz"
           sha256sum "${BUNDLE_NAME}.tar.xz" | tee SHA256SUMS
           echo "BUNDLE_FILE=${BUNDLE_NAME}.tar.xz" >> "$GITHUB_ENV"
 
