@@ -1,0 +1,105 @@
+name: Package toolchain bundle
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Load pinned versions
+        run: |
+          set -euo pipefail
+          source versions.env
+          echo "SDK_TAG=$SDK_TAG"               >> "$GITHUB_ENV"
+          echo "SDK_COMMIT=$SDK_COMMIT"         >> "$GITHUB_ENV"
+          echo "SDK_REPO=$SDK_REPO"             >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_URL=$TOOLCHAIN_URL"   >> "$GITHUB_ENV"
+          echo "BUNDLE_VERSION=$BUNDLE_VERSION" >> "$GITHUB_ENV"
+
+      - name: Download SDK zip from gitee
+        run: |
+          set -euo pipefail
+          url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
+          echo "Downloading SDK from: $url"
+          for i in 1 2 3; do
+            curl -fSL --retry 3 -o sdk.zip "$url" && break
+            echo "Attempt $i failed, retrying in 20s..."
+            rm -f sdk.zip
+            sleep 20
+          done
+          test -f sdk.zip || { echo "SDK download failed"; exit 1; }
+          unzip -q sdk.zip -d sdk-raw
+          SDK_DIR=$(ls -d sdk-raw/*/ | head -1)
+          mv "$SDK_DIR" sdk
+          rm -rf sdk-raw sdk.zip
+
+      - name: Verify SDK contents
+        run: |
+          set -euo pipefail
+          echo "SDK extracted from tag: $SDK_TAG"
+          echo "Expected commit: $SDK_COMMIT"
+          ls sdk/ | head -20
+
+      - name: Download JieLi Linux toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain-raw
+          curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C toolchain-raw
+          TC_DIR=$(ls -d toolchain-raw/jieli-linux-toolchains-* | sort | tail -1)
+          mv "$TC_DIR" toolchain
+          rm -rf toolchain-raw
+          TC_VERSION=$(basename "$(ls -d toolchain/jieli-linux-toolchains-* 2>/dev/null || echo "toolchain")" | sed 's/jieli-linux-toolchains-//')
+          # If the dir was already renamed, grab version from the original path
+          TC_VERSION=$(echo "$TC_DIR" | grep -oP 'jieli-linux-toolchains-\K.*' || echo "unknown")
+          echo "TOOLCHAIN_ACTUAL_VERSION=$TC_VERSION" >> "$GITHUB_ENV"
+          echo "Toolchain version: $TC_VERSION"
+
+      - name: Bundle into tar.xz
+        run: |
+          set -euo pipefail
+          BUNDLE_NAME="fm1-toolchain-${BUNDLE_VERSION}"
+          mkdir -p "$BUNDLE_NAME"
+          mv sdk "$BUNDLE_NAME/AC79_SDK"
+          mv toolchain "$BUNDLE_NAME/toolchain"
+          cp versions.env "$BUNDLE_NAME/"
+          echo "TOOLCHAIN_ACTUAL_VERSION=$TOOLCHAIN_ACTUAL_VERSION" >> "$BUNDLE_NAME/versions.env"
+          echo "PACKAGED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$BUNDLE_NAME/versions.env"
+          tar -cJf "${BUNDLE_NAME}.tar.xz" "$BUNDLE_NAME"
+          sha256sum "${BUNDLE_NAME}.tar.xz" | tee SHA256SUMS
+          echo "BUNDLE_FILE=${BUNDLE_NAME}.tar.xz" >> "$GITHUB_ENV"
+
+      - name: Smoke test the bundle
+        run: |
+          set -euo pipefail
+          BUNDLE_NAME="fm1-toolchain-${BUNDLE_VERSION}"
+          export JIELI_TOOLCHAIN="$(pwd)/$BUNDLE_NAME/toolchain"
+          export AC79_SDK="$(pwd)/$BUNDLE_NAME/AC79_SDK"
+          make -C smoke-test check
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$BUNDLE_FILE" SHA256SUMS \
+            --title "FM1 Toolchain $BUNDLE_VERSION" \
+            --notes "SDK: $SDK_TAG | Toolchain: $TOOLCHAIN_ACTUAL_VERSION"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fm1-toolchain-bundle
+          path: |
+            fm1-toolchain-*.tar.xz
+            SHA256SUMS
+          if-no-files-found: error

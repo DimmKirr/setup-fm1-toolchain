@@ -1,0 +1,7 @@
+*.tar.xz
+SHA256SUMS
+sdk/
+toolchain/
+fm1-toolchain-*/
+.devcell/
+.scratch/

@@ -1,0 +1,80 @@
+name: 'Setup FM1 Toolchain'
+description: 'Install the JieLi AC79 SDK and toolchain for FM1 firmware builds'
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+inputs:
+  version:
+    description: 'Toolchain bundle version (matches GitHub Release tag, e.g. v1.0.0)'
+    required: false
+    default: 'v1.0.0'
+  github-token:
+    description: 'GitHub token for downloading release assets'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  toolchain-path:
+    description: 'Path to the JieLi toolchain directory'
+    value: ${{ steps.setup.outputs.toolchain-path }}
+  sdk-path:
+    description: 'Path to the AC79 SDK directory'
+    value: ${{ steps.setup.outputs.sdk-path }}
+  cache-hit:
+    description: 'Whether the toolchain was restored from cache'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Restore from cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.fm1-toolchain
+        key: fm1-toolchain-${{ inputs.version }}
+
+    - name: Download and extract toolchain bundle
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        REPO="${{ github.action_repository || 'dimmkirr/setup-fm1-toolchain' }}"
+        BUNDLE_VERSION="${VERSION#v}"
+        ASSET="fm1-toolchain-${BUNDLE_VERSION}.tar.xz"
+
+        echo "Downloading $ASSET from $REPO release $VERSION..."
+        gh release download "$VERSION" \
+          --repo "$REPO" \
+          --pattern "$ASSET" \
+          --dir /tmp/fm1-download
+
+        echo "Extracting to ~/.fm1-toolchain..."
+        mkdir -p ~/.fm1-toolchain
+        tar -xJf "/tmp/fm1-download/$ASSET" --strip-components=1 -C ~/.fm1-toolchain
+        rm -rf /tmp/fm1-download
+
+    - name: Set environment variables
+      id: setup
+      shell: bash
+      run: |
+        set -euo pipefail
+        INSTALL_DIR="$HOME/.fm1-toolchain"
+
+        test -d "$INSTALL_DIR/toolchain" || { echo "Toolchain not found at $INSTALL_DIR/toolchain"; exit 1; }
+        test -d "$INSTALL_DIR/AC79_SDK"  || { echo "SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
+
+        echo "JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain" >> "$GITHUB_ENV"
+        echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"         >> "$GITHUB_ENV"
+        echo "$INSTALL_DIR/toolchain/bin"              >> "$GITHUB_PATH"
+
+        echo "toolchain-path=$INSTALL_DIR/toolchain" >> "$GITHUB_OUTPUT"
+        echo "sdk-path=$INSTALL_DIR/AC79_SDK"        >> "$GITHUB_OUTPUT"
+
+        echo "FM1 toolchain ready:"
+        echo "  JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain"
+        echo "  AC79_SDK=$INSTALL_DIR/AC79_SDK"
