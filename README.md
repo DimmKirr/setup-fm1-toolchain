@@ -21,12 +21,11 @@ The action sets these environment variables:
 - `AC79_SDK` - path to the AC79 SDK
 - Adds `$JIELI_TOOLCHAIN/bin` to `PATH`
 
-### Inputs
+Pin to a specific release to lock the SDK and toolchain versions:
 
-| Input | Default | Description |
-|-------|---------|-------------|
-| `release-version` | `v1.0.0` | Bundle release version (GitHub Release tag) |
-| `github-token` | `github.token` | Token for downloading release assets |
+```yaml
+- uses: dimmkirr/setup-fm1-toolchain@v1.0.2
+```
 
 ### Outputs
 
@@ -64,10 +63,9 @@ FM1_TOOLCHAIN_HOME=/opt/fm1 bash install.sh
 
 ## Versioning
 
-Two version axes:
+The action tag determines which SDK and toolchain bundle gets installed. Each tag (e.g. `v1.0.2`) has a corresponding GitHub Release with the pre-built bundle. The `@v1` major tag always points to the latest `v1.x.x` release.
 
-- **Action version** (`@v1`): the action code. Consumers pin to the major tag.
-- **Release version** (`release-version: v1.0.0`): which SDK + toolchain bundle to install. Each release bundles a specific SDK and toolchain, visible in the release title and asset filename.
+Release titles and asset filenames show exactly which SDK and toolchain versions are bundled (e.g. `fm1-toolchain-1.0.2-sdk1.2.14-tc20260730.1.tar.xz`).
 
 Upstream versions are pinned in `versions.env`. The cron workflow (`track.yml`) monitors for updates and creates PRs. After merging a version bump, tag `vX.Y.Z` to trigger packaging and create the release.
 

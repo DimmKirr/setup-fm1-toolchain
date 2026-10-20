@@ -107,15 +107,11 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "$BUNDLE_FILE" SHA256SUMS \
             --title "FM1 Toolchain $BUNDLE_VERSION (SDK $SDK_SHORT / Toolchain $TOOLCHAIN_ACTUAL_VERSION)" \
-            --notes "Bundle release \`v${BUNDLE_VERSION}\`
-
-          **SDK:** \`$SDK_TAG\` (v$SDK_SHORT)
+            --notes "**SDK:** \`$SDK_TAG\` (v$SDK_SHORT)
           **Toolchain:** \`$TOOLCHAIN_ACTUAL_VERSION\`
 
           \`\`\`yaml
           - uses: dimmkirr/setup-fm1-toolchain@v1
-            with:
-              release-version: v${BUNDLE_VERSION}
           \`\`\`"
 
       - name: Attest release assets
@@ -128,10 +124,14 @@ jobs:
 
       - name: Update major version tag
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           MAJOR=$(echo "$GITHUB_REF_NAME" | grep -oP '^v\d+')
-          git tag -f "$MAJOR" "$GITHUB_REF_NAME"
-          git push origin "$MAJOR" --force
+          gh api -X PATCH repos/${{ github.repository }}/git/refs/tags/"$MAJOR" \
+            -f sha="$(git rev-parse HEAD)" -f force=true 2>/dev/null \
+          || gh api -X POST repos/${{ github.repository }}/git/refs \
+            -f ref="refs/tags/$MAJOR" -f sha="$(git rev-parse HEAD)"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

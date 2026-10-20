@@ -16,8 +16,6 @@ jobs:
 
       - name: Test action
         uses: ./
-        with:
-          release-version: v1.0.1
 
       - name: Run smoke test
         run: make -C smoke-test check
