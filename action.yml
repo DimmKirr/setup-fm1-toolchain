@@ -59,13 +59,27 @@ runs:
         gh release download "$VERSION" \
           --repo "$REPO" \
           --pattern "fm1-toolchain-*.tar.xz" \
+          --pattern "SHA256SUMS" \
           --dir /tmp/fm1-download
 
-        ASSET=$(ls /tmp/fm1-download/fm1-toolchain-*.tar.xz)
+        cd /tmp/fm1-download
+        echo "Verifying checksum..."
+        sha256sum -c SHA256SUMS
+
+        ASSET=$(ls fm1-toolchain-*.tar.xz)
         echo "Extracting $ASSET to ~/.fm1-toolchain..."
         mkdir -p ~/.fm1-toolchain
         tar -xJf "$ASSET" --strip-components=1 -C ~/.fm1-toolchain
+        cd -
         rm -rf /tmp/fm1-download
+
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq libharfbuzz-dev libfribidi-dev libraqm-dev
+        pip install --quiet Pillow fonttools mido
 
     - name: Set environment variables
       id: setup
