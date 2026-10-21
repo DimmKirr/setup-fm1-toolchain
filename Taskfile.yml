@@ -13,10 +13,14 @@ tasks:
   download:
     desc: Download SDK, toolchain, and build dependencies
     aliases: [default]
+    preconditions:
+      - sh: uname -s | grep -q Linux
+        msg: "Linux required. The JieLi AC79 toolchain is Linux-only."
     cmds:
+      - task: download:deps
       - task: download:sdk
       - task: download:toolchain
-      - task: download:deps
+      - task: download:verify
 
   download:sdk:
     desc: Download AC79 SDK (mirror with checksum, fallback to gitee)
@@ -105,13 +109,21 @@ tasks:
       - test -d {{.INSTALL_DIR}}/toolchain
 
   download:deps:
-    desc: Install build dependencies (Linux)
+    desc: Install build dependencies (Linux, with qemu on ARM)
+    vars:
+      IS_ARM:
+        sh: '[ "$(uname -m)" = "aarch64" ] && echo true || echo false'
+      QEMU_PKGS: '{{if eq .IS_ARM "true"}}qemu-user-static binfmt-support{{end}}'
     cmds:
       - |
         set -euo pipefail
         sudo apt-get update -qq
-        sudo apt-get install -y -qq libharfbuzz-dev libfribidi-dev libraqm-dev
+        sudo apt-get install -y -qq libharfbuzz-dev libfribidi-dev libraqm-dev {{.QEMU_PKGS}}
         pip install --quiet Pillow fonttools mido
+    status:
+      - dpkg -s libharfbuzz-dev libfribidi-dev libraqm-dev >/dev/null 2>&1
+      - python3 -c "import PIL, fontTools, mido" 2>/dev/null
+      - '{{if eq .IS_ARM "true"}}command -v qemu-x86_64-static >/dev/null && qemu-x86_64-static --version >/dev/null{{else}}true{{end}}'
 
   remove:
     desc: Remove installed SDK and toolchain
