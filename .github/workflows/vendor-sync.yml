@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           TAGS=$(curl -fsSL "https://gitee.com/api/v5/repos/${{ steps.current.outputs.sdk-repo }}/tags?per_page=100")
-          LATEST=$(echo "$TAGS" | jq -r '.[0].name')
+          LATEST=$(echo "$TAGS" | jq -r '.[-1].name')
           CURRENT="${{ steps.current.outputs.sdk-tag }}"
           LATEST_SHORT=$(echo "$LATEST" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
 
