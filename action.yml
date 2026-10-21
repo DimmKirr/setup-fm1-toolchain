@@ -5,6 +5,12 @@ branding:
   color: 'blue'
 
 inputs:
+  sdk-version:
+    description: 'SDK version to install (e.g. 1.2.14). Defaults to the version pinned in this action.'
+    required: false
+  toolchain-version:
+    description: 'Toolchain version to install (e.g. 20260730.1). Defaults to the version pinned in this action.'
+    required: false
   github-token:
     description: 'GitHub token for downloading release assets'
     required: false
@@ -12,10 +18,10 @@ inputs:
 
 outputs:
   sdk-version:
-    description: 'SDK version included in the installed bundle'
+    description: 'SDK version installed'
     value: ${{ steps.setup.outputs.sdk-version }}
   toolchain-version:
-    description: 'Toolchain version included in the installed bundle'
+    description: 'Toolchain version installed'
     value: ${{ steps.setup.outputs.toolchain-version }}
   toolchain-path:
     description: 'Path to the JieLi toolchain directory'
@@ -30,48 +36,128 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Resolve bundle version
+    - name: Resolve versions
       id: version
       shell: bash
       run: |
         set -euo pipefail
         source "${{ github.action_path }}/versions.env"
-        echo "version=v${BUNDLE_VERSION}" >> "$GITHUB_OUTPUT"
+
+        # Derive default SDK short version from the pinned tag
+        DEFAULT_SDK=$(echo "$SDK_TAG" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+
+        # Derive default toolchain version (stored in versions.env after mirror.yml runs)
+        DEFAULT_TC="${TOOLCHAIN_VERSION:-}"
+
+        SDK_VER="${{ inputs.sdk-version }}"
+        TC_VER="${{ inputs.toolchain-version }}"
+        SDK_VER="${SDK_VER:-$DEFAULT_SDK}"
+        TC_VER="${TC_VER:-$DEFAULT_TC}"
+
+        echo "sdk-version=$SDK_VER"       >> "$GITHUB_OUTPUT"
+        echo "toolchain-version=$TC_VER"  >> "$GITHUB_OUTPUT"
+        echo "sdk-tag=$SDK_TAG"           >> "$GITHUB_OUTPUT"
+        echo "sdk-repo=$SDK_REPO"         >> "$GITHUB_OUTPUT"
+        echo "toolchain-url=$TOOLCHAIN_URL" >> "$GITHUB_OUTPUT"
+
+        echo "Resolved SDK: $SDK_VER, Toolchain: $TC_VER"
 
     - name: Restore from cache
       id: cache
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         path: ~/.fm1-toolchain
-        key: fm1-toolchain-${{ steps.version.outputs.version }}
+        key: fm1-sdk-${{ steps.version.outputs.sdk-version }}-tc-${{ steps.version.outputs.toolchain-version }}
 
-    - name: Download and extract toolchain bundle
+    - name: Download SDK
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        VERSION: ${{ steps.version.outputs.version }}
+        SDK_VER: ${{ steps.version.outputs.sdk-version }}
+        SDK_TAG: ${{ steps.version.outputs.sdk-tag }}
+        SDK_REPO: ${{ steps.version.outputs.sdk-repo }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
         REPO="${{ github.action_repository || 'dimmkirr/setup-fm1-toolchain' }}"
+        INSTALL_DIR="$HOME/.fm1-toolchain"
+        mkdir -p "$INSTALL_DIR"
 
-        echo "Downloading bundle from $REPO release $VERSION..."
-        gh release download "$VERSION" \
-          --repo "$REPO" \
-          --pattern "fm1-toolchain-*.tar.xz" \
-          --pattern "SHA256SUMS" \
-          --dir /tmp/fm1-download
+        RELEASE_TAG="sdk-${SDK_VER}"
+        echo "Trying mirror release $RELEASE_TAG..."
 
-        cd /tmp/fm1-download
-        echo "Verifying checksum..."
-        sha256sum -c SHA256SUMS
+        if gh release download "$RELEASE_TAG" \
+             --repo "$REPO" \
+             --pattern "sdk-*.tar.xz" \
+             --pattern "sdk-*.tar.xz.sha256" \
+             --dir /tmp/fm1-sdk 2>/dev/null; then
 
-        ASSET=$(ls fm1-toolchain-*.tar.xz)
-        echo "Extracting $ASSET to ~/.fm1-toolchain..."
-        mkdir -p ~/.fm1-toolchain
-        tar -xJf "$ASSET" --strip-components=1 -C ~/.fm1-toolchain
-        cd -
-        rm -rf /tmp/fm1-download
+          cd /tmp/fm1-sdk
+          echo "Verifying checksum..."
+          sha256sum -c sdk-*.tar.xz.sha256
+
+          echo "Extracting SDK..."
+          tar -xJf sdk-*.tar.xz -C "$INSTALL_DIR"
+          mv "$INSTALL_DIR/sdk" "$INSTALL_DIR/AC79_SDK"
+          cd -
+          rm -rf /tmp/fm1-sdk
+        else
+          echo "::warning::Mirror release $RELEASE_TAG not found, falling back to upstream (SLOW)"
+          url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
+          echo "Downloading from: $url"
+          mkdir -p /tmp/fm1-sdk-fallback
+          for i in 1 2 3; do
+            curl -fSL --retry 3 -o /tmp/fm1-sdk-fallback/sdk.zip "$url" && break
+            echo "Attempt $i failed, retrying in 20s..."
+            rm -f /tmp/fm1-sdk-fallback/sdk.zip
+            sleep 20
+          done
+          test -f /tmp/fm1-sdk-fallback/sdk.zip || { echo "::error::SDK download failed"; exit 1; }
+          unzip -q /tmp/fm1-sdk-fallback/sdk.zip -d /tmp/fm1-sdk-fallback/raw
+          SDK_DIR=$(ls -d /tmp/fm1-sdk-fallback/raw/*/ | head -1)
+          mv "$SDK_DIR" "$INSTALL_DIR/AC79_SDK"
+          rm -rf /tmp/fm1-sdk-fallback
+        fi
+
+    - name: Download toolchain
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TC_VER: ${{ steps.version.outputs.toolchain-version }}
+        TOOLCHAIN_URL: ${{ steps.version.outputs.toolchain-url }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        REPO="${{ github.action_repository || 'dimmkirr/setup-fm1-toolchain' }}"
+        INSTALL_DIR="$HOME/.fm1-toolchain"
+        mkdir -p "$INSTALL_DIR"
+
+        RELEASE_TAG="toolchain-${TC_VER}"
+        echo "Trying mirror release $RELEASE_TAG..."
+
+        if gh release download "$RELEASE_TAG" \
+             --repo "$REPO" \
+             --pattern "toolchain-*.tar.xz" \
+             --pattern "toolchain-*.tar.xz.sha256" \
+             --dir /tmp/fm1-tc 2>/dev/null; then
+
+          cd /tmp/fm1-tc
+          echo "Verifying checksum..."
+          sha256sum -c toolchain-*.tar.xz.sha256
+
+          echo "Extracting toolchain..."
+          tar -xJf toolchain-*.tar.xz -C "$INSTALL_DIR"
+          cd -
+          rm -rf /tmp/fm1-tc
+        else
+          echo "::warning::Mirror release $RELEASE_TAG not found, falling back to upstream (SLOW)"
+          echo "Downloading from: $TOOLCHAIN_URL"
+          mkdir -p /tmp/fm1-tc-fallback
+          curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C /tmp/fm1-tc-fallback
+          TC_DIR=$(ls -d /tmp/fm1-tc-fallback/jieli-linux-toolchains-* | sort | tail -1)
+          mv "$TC_DIR" "$INSTALL_DIR/toolchain"
+          rm -rf /tmp/fm1-tc-fallback
+        fi
 
     - name: Install build dependencies
       shell: bash
@@ -84,28 +170,29 @@ runs:
     - name: Set environment variables
       id: setup
       shell: bash
+      env:
+        SDK_VER: ${{ steps.version.outputs.sdk-version }}
+        TC_VER: ${{ steps.version.outputs.toolchain-version }}
       run: |
         set -euo pipefail
         INSTALL_DIR="$HOME/.fm1-toolchain"
 
-        test -d "$INSTALL_DIR/toolchain" || { echo "Toolchain not found at $INSTALL_DIR/toolchain"; exit 1; }
-        test -d "$INSTALL_DIR/AC79_SDK"          || { echo "SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
-
-        source "$INSTALL_DIR/versions.env"
+        test -d "$INSTALL_DIR/toolchain" || { echo "::error::Toolchain not found at $INSTALL_DIR/toolchain"; exit 1; }
+        test -d "$INSTALL_DIR/AC79_SDK"  || { echo "::error::SDK not found at $INSTALL_DIR/AC79_SDK"; exit 1; }
 
         # JIELI_TOOLCHAIN points to the root containing platform dirs (pi32v2/, pi32/, q32s/, common/)
         # Build scripts append the platform subdir. See https://github.com/Jieli-Tech/fw-AC63_BT_SDK/issues/211
         echo "JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain" >> "$GITHUB_ENV"
-        echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"                >> "$GITHUB_ENV"
-        echo "$INSTALL_DIR/toolchain/pi32v2/bin"       >> "$GITHUB_PATH"
+        echo "AC79_SDK=$INSTALL_DIR/AC79_SDK"         >> "$GITHUB_ENV"
+        echo "$INSTALL_DIR/toolchain/pi32v2/bin"      >> "$GITHUB_PATH"
 
-        echo "toolchain-path=$INSTALL_DIR/toolchain"        >> "$GITHUB_OUTPUT"
-        echo "sdk-path=$INSTALL_DIR/AC79_SDK"                      >> "$GITHUB_OUTPUT"
-        echo "sdk-version=$SDK_TAG"                                >> "$GITHUB_OUTPUT"
-        echo "toolchain-version=${TOOLCHAIN_ACTUAL_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "toolchain-path=$INSTALL_DIR/toolchain"  >> "$GITHUB_OUTPUT"
+        echo "sdk-path=$INSTALL_DIR/AC79_SDK"         >> "$GITHUB_OUTPUT"
+        echo "sdk-version=$SDK_VER"                   >> "$GITHUB_OUTPUT"
+        echo "toolchain-version=$TC_VER"              >> "$GITHUB_OUTPUT"
 
         echo "FM1 toolchain ready:"
         echo "  JIELI_TOOLCHAIN=$INSTALL_DIR/toolchain"
         echo "  AC79_SDK=$INSTALL_DIR/AC79_SDK"
-        echo "  SDK version: $SDK_TAG"
-        echo "  Toolchain version: ${TOOLCHAIN_ACTUAL_VERSION:-unknown}"
+        echo "  SDK: $SDK_VER"
+        echo "  Toolchain: $TC_VER"

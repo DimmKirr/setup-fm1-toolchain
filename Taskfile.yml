@@ -1,0 +1,218 @@
+version: '3'
+
+dotenv: ['versions.env']
+
+vars:
+  WORK_DIR: .scratch/mirror
+  SDK_SHORT:
+    sh: source versions.env && echo "$SDK_TAG" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown"
+  SDK_RELEASE_TAG: 'sdk-{{.SDK_SHORT}}'
+  TC_RELEASE_TAG: 'toolchain-{{.TC_VERSION}}'
+
+tasks:
+  default:
+    desc: Run the full mirror pipeline (download, package, smoke test)
+    cmds:
+      - task: clean
+      - task: download
+      - task: smoke-test
+      - task: package
+      - task: summary
+
+  clean:
+    desc: Remove work directory
+    cmds:
+      - rm -rf {{.WORK_DIR}}
+
+  download:
+    desc: Download SDK and toolchain from upstream in parallel
+    deps: [download:sdk, download:toolchain]
+
+  download:sdk:
+    desc: Download SDK from gitee
+    cmds:
+      - mkdir -p {{.WORK_DIR}}/sdk-raw
+      - |
+        url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
+        echo "[sdk] Downloading from: $url"
+        for i in 1 2 3; do
+          curl -fSL --retry 3 -o {{.WORK_DIR}}/sdk.zip "$url" && break
+          echo "[sdk] Attempt $i failed, retrying in 20s..."
+          rm -f {{.WORK_DIR}}/sdk.zip
+          sleep 20
+        done
+        test -f {{.WORK_DIR}}/sdk.zip || { echo "[sdk] Download failed"; exit 1; }
+      - unzip -q {{.WORK_DIR}}/sdk.zip -d {{.WORK_DIR}}/sdk-raw
+      - |
+        SDK_DIR=$(ls -d {{.WORK_DIR}}/sdk-raw/*/ | head -1)
+        mv "$SDK_DIR" {{.WORK_DIR}}/sdk
+      - rm -rf {{.WORK_DIR}}/sdk-raw {{.WORK_DIR}}/sdk.zip
+      - echo "[sdk] Done — $(ls {{.WORK_DIR}}/sdk/ | head -5)"
+    status:
+      - test -d {{.WORK_DIR}}/sdk
+
+  download:toolchain:
+    desc: Download toolchain from pkgman
+    cmds:
+      - |
+        echo "[toolchain] Downloading from: $TOOLCHAIN_URL"
+        curl -fSL --retry 3 -o /tmp/fm1-toolchain.tar.xz "$TOOLCHAIN_URL"
+        # Extract to /tmp (native fs) because the archive has cross-dir symlinks
+        # that fail on macOS bind-mounted filesystems.
+        rm -rf /tmp/fm1-toolchain-raw && mkdir -p /tmp/fm1-toolchain-raw
+        tar -xJf /tmp/fm1-toolchain.tar.xz --no-same-owner -C /tmp/fm1-toolchain-raw
+        TC_DIR=$(ls -d /tmp/fm1-toolchain-raw/jieli-linux-toolchains-* | sort | tail -1)
+        TC_VERSION=$(basename "$TC_DIR" | sed 's/jieli-linux-toolchains-//')
+        mkdir -p {{.WORK_DIR}}
+        # Copy to project dir, dereferencing symlinks so it works on any filesystem
+        cp -rL "$TC_DIR" {{.WORK_DIR}}/toolchain
+        echo "$TC_VERSION" > {{.WORK_DIR}}/tc-version
+        rm -rf /tmp/fm1-toolchain-raw /tmp/fm1-toolchain.tar.xz
+        echo "[toolchain] Done — version $TC_VERSION"
+    status:
+      - test -d {{.WORK_DIR}}/toolchain
+
+  smoke-test:
+    desc: Validate SDK and toolchain before packaging
+    deps: [download]
+    cmds:
+      - |
+        TC="$(pwd)/{{.WORK_DIR}}/toolchain"
+        SDK="$(pwd)/{{.WORK_DIR}}/sdk"
+        echo "[smoke] Checking toolchain..."
+        test -d "$TC/pi32v2/bin"        || { echo "pi32v2/bin missing"; exit 1; }
+        test -d "$TC/common/bin"        || { echo "common/bin missing"; exit 1; }
+        test -e "$TC/pi32v2/bin/clang"  || { echo "clang missing"; exit 1; }
+        test -x "$TC/common/bin/clang"  || { echo "clang not executable"; exit 1; }
+        echo "[smoke] Checking SDK..."
+        test -f "$SDK/Makefile"         || { echo "SDK Makefile missing"; exit 1; }
+        # Skip clang --version on non-x86_64 (toolchain binaries are x86_64)
+        if [ "$(uname -m)" = "x86_64" ]; then
+          "$TC/pi32v2/bin/clang" --version
+        else
+          echo "[smoke] Skipping clang execution ($(uname -m) host, x86_64 toolchain)"
+        fi
+        echo "[smoke] All checks passed"
+
+  package:
+    desc: Package SDK and toolchain as separate archives with SHA256
+    deps: [download]
+    cmds:
+      - task: package:sdk
+      - task: package:toolchain
+
+  package:sdk:
+    desc: Archive the SDK
+    cmds:
+      - mkdir -p {{.WORK_DIR}}/dist
+      - |
+        cd {{.WORK_DIR}}
+        SDK_ARCHIVE="sdk-{{.SDK_SHORT}}.tar.xz"
+        echo "[sdk] Packaging $SDK_ARCHIVE..."
+        tar -cf - sdk | xz -T0 > "dist/$SDK_ARCHIVE"
+        cd dist
+        sha256sum "$SDK_ARCHIVE" > "$SDK_ARCHIVE.sha256"
+        echo "[sdk] $(cat "$SDK_ARCHIVE.sha256")"
+    status:
+      - test -f {{.WORK_DIR}}/dist/sdk-{{.SDK_SHORT}}.tar.xz
+
+  package:toolchain:
+    desc: Archive the toolchain
+    vars:
+      TC_VERSION:
+        sh: cat {{.WORK_DIR}}/tc-version 2>/dev/null || echo "unknown"
+    cmds:
+      - mkdir -p {{.WORK_DIR}}/dist
+      - |
+        cd {{.WORK_DIR}}
+        TC_ARCHIVE="toolchain-{{.TC_VERSION}}.tar.xz"
+        echo "[toolchain] Packaging $TC_ARCHIVE..."
+        tar -cf - toolchain | xz -T0 > "dist/$TC_ARCHIVE"
+        cd dist
+        sha256sum "$TC_ARCHIVE" > "$TC_ARCHIVE.sha256"
+        echo "[toolchain] $(cat "$TC_ARCHIVE.sha256")"
+    status:
+      - test -f {{.WORK_DIR}}/dist/toolchain-*.tar.xz
+
+  summary:
+    desc: Print what was built
+    cmds:
+      - |
+        TC_VERSION=$(cat {{.WORK_DIR}}/tc-version 2>/dev/null || echo "unknown")
+        echo ""
+        echo "=== Mirror artifacts ready ==="
+        echo ""
+        echo "SDK release tag:       {{.SDK_RELEASE_TAG}}"
+        echo "  Source:               https://gitee.com/${SDK_REPO}/releases/tag/${SDK_TAG}"
+        echo "  Archive:              $(ls {{.WORK_DIR}}/dist/sdk-*.tar.xz)"
+        echo "  SHA256:               $(cat {{.WORK_DIR}}/dist/sdk-*.sha256)"
+        echo ""
+        echo "Toolchain release tag: toolchain-${TC_VERSION}"
+        echo "  Source:               $TOOLCHAIN_URL"
+        echo "  Archive:              $(ls {{.WORK_DIR}}/dist/toolchain-*.tar.xz)"
+        echo "  SHA256:               $(cat {{.WORK_DIR}}/dist/toolchain-*.sha256)"
+        echo ""
+        echo "Smoke test:            passed"
+        echo ""
+        echo "To publish these as GitHub releases:"
+        echo "  task publish           # both"
+        echo "  task publish:sdk       # SDK only"
+        echo "  task publish:toolchain # toolchain only"
+
+  publish:
+    desc: Create GitHub releases for both SDK and toolchain
+    cmds:
+      - task: publish:sdk
+      - task: publish:toolchain
+
+  publish:sdk:
+    desc: Create a GitHub release for the mirrored SDK
+    vars:
+      TC_VERSION:
+        sh: cat {{.WORK_DIR}}/tc-version 2>/dev/null || echo "unknown"
+    cmds:
+      - |
+        SDK_ARCHIVE="{{.WORK_DIR}}/dist/sdk-{{.SDK_SHORT}}.tar.xz"
+        SHA_FILE="${SDK_ARCHIVE}.sha256"
+        TAG="{{.SDK_RELEASE_TAG}}"
+
+        gh release create "$TAG" \
+          "$SDK_ARCHIVE" "$SHA_FILE" \
+          --prerelease \
+          --title "SDK {{.SDK_SHORT}} (mirror)" \
+          --notes "$(cat <<NOTES
+        **Mirror of JieLi AC79 AIoT SDK {{.SDK_SHORT}}**
+
+        This is a 1:1 copy of the upstream SDK, provided for convenience of download by the [setup-fm1-toolchain](https://github.com/DimmKirr/setup-fm1-toolchain) GitHub Action.
+
+        **Source:** [${SDK_TAG}](https://gitee.com/${SDK_REPO}/releases/tag/${SDK_TAG})
+        **SHA256:** \`$(cut -d' ' -f1 "$SHA_FILE")\`
+        NOTES
+        )"
+        echo "[sdk] Published release $TAG"
+
+  publish:toolchain:
+    desc: Create a GitHub release for the mirrored toolchain
+    vars:
+      TC_VERSION:
+        sh: cat {{.WORK_DIR}}/tc-version 2>/dev/null || echo "unknown"
+    cmds:
+      - |
+        TC_ARCHIVE="{{.WORK_DIR}}/dist/toolchain-{{.TC_VERSION}}.tar.xz"
+        SHA_FILE="${TC_ARCHIVE}.sha256"
+        TAG="toolchain-{{.TC_VERSION}}"
+
+        gh release create "$TAG" \
+          "$TC_ARCHIVE" "$SHA_FILE" \
+          --prerelease \
+          --title "Toolchain {{.TC_VERSION}} (mirror)" \
+          --notes "$(cat <<NOTES
+        **Mirror of JieLi Linux Toolchain {{.TC_VERSION}}**
+
+        This is a 1:1 copy of the upstream toolchain, provided for convenience of download by the [setup-fm1-toolchain](https://github.com/DimmKirr/setup-fm1-toolchain) GitHub Action.
+
+        **Source:** $TOOLCHAIN_URL
+        **SHA256:** \`$(cut -d' ' -f1 "$SHA_FILE")\`
+        NOTES
+        )"
+        echo "[toolchain] Published release $TAG"

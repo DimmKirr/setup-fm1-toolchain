@@ -1,0 +1,240 @@
+name: Vendor sync
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Re-publish even if versions already mirrored'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Load current pinned versions
+        id: current
+        run: |
+          source versions.env
+          echo "sdk-tag=$SDK_TAG"                 >> "$GITHUB_OUTPUT"
+          echo "sdk-repo=$SDK_REPO"               >> "$GITHUB_OUTPUT"
+          echo "toolchain-url=$TOOLCHAIN_URL"     >> "$GITHUB_OUTPUT"
+          echo "toolchain-version=${TOOLCHAIN_VERSION:-}" >> "$GITHUB_OUTPUT"
+
+          SDK_SHORT=$(echo "$SDK_TAG" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+          echo "sdk-version=$SDK_SHORT"           >> "$GITHUB_OUTPUT"
+
+      # ── Check upstream ─────────────────────────────────────────────
+
+      - name: Check gitee for new SDK tags
+        id: sdk
+        run: |
+          set -euo pipefail
+          TAGS=$(curl -fsSL "https://gitee.com/api/v5/repos/${{ steps.current.outputs.sdk-repo }}/tags?per_page=100")
+          LATEST=$(echo "$TAGS" | jq -r '.[0].name')
+          CURRENT="${{ steps.current.outputs.sdk-tag }}"
+          LATEST_SHORT=$(echo "$LATEST" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+
+          echo "Current SDK: $CURRENT"
+          echo "Latest SDK:  $LATEST ($LATEST_SHORT)"
+          echo "latest-tag=$LATEST"       >> "$GITHUB_OUTPUT"
+          echo "latest-short=$LATEST_SHORT" >> "$GITHUB_OUTPUT"
+
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check toolchain for updates
+        id: toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tc-check
+          curl -fsSL --retry 3 "${{ steps.current.outputs.toolchain-url }}" \
+            | tar -xJ -C /tmp/tc-check
+          NEW_DIR=$(ls -d /tmp/tc-check/jieli-linux-toolchains-* | sort | tail -1)
+          NEW_VERSION=$(basename "$NEW_DIR" | sed 's/jieli-linux-toolchains-//')
+          rm -rf /tmp/tc-check
+
+          CURRENT="${{ steps.current.outputs.toolchain-version }}"
+          echo "Current toolchain: ${CURRENT:-unknown}"
+          echo "Latest toolchain:  $NEW_VERSION"
+          echo "latest=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "$NEW_VERSION" != "$CURRENT" ]; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Mirror SDK ─────────────────────────────────────────────────
+
+      - name: Check if SDK mirror release exists
+        id: sdk-exists
+        if: steps.sdk.outputs.new == 'true' || inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="sdk-${{ steps.sdk.outputs.latest-short }}"
+          if gh release view "$TAG" --json tagName -q .tagName >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and publish SDK
+        if: >-
+          (steps.sdk.outputs.new == 'true' || inputs.force)
+          && steps.sdk-exists.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_TAG: ${{ steps.sdk.outputs.latest-tag }}
+          SDK_REPO: ${{ steps.current.outputs.sdk-repo }}
+          SDK_SHORT: ${{ steps.sdk.outputs.latest-short }}
+        run: |
+          set -euo pipefail
+          url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
+          echo "[sdk] Downloading from: $url"
+          mkdir -p /tmp/sdk-work
+          for i in 1 2 3; do
+            curl -fSL --retry 3 -o /tmp/sdk-work/sdk.zip "$url" && break
+            echo "[sdk] Attempt $i failed, retrying in 20s..."
+            rm -f /tmp/sdk-work/sdk.zip
+            sleep 20
+          done
+          test -f /tmp/sdk-work/sdk.zip || { echo "::error::SDK download failed"; exit 1; }
+
+          unzip -q /tmp/sdk-work/sdk.zip -d /tmp/sdk-work/raw
+          SDK_DIR=$(ls -d /tmp/sdk-work/raw/*/ | head -1)
+          mv "$SDK_DIR" /tmp/sdk-work/sdk
+
+          ARCHIVE="sdk-${SDK_SHORT}.tar.xz"
+          cd /tmp/sdk-work
+          tar -cf - sdk | xz -T0 > "$ARCHIVE"
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          echo "[sdk] SHA256: $(cat "${ARCHIVE}.sha256")"
+
+          RELEASE_TAG="sdk-${SDK_SHORT}"
+          gh release create "$RELEASE_TAG" \
+            "$ARCHIVE" "${ARCHIVE}.sha256" \
+            --repo "${{ github.repository }}" \
+            --prerelease \
+            --title "SDK ${SDK_SHORT} (mirror)" \
+            --notes "$(cat <<EOF
+          **Mirror of JieLi AC79 AIoT SDK ${SDK_SHORT}**
+
+          This is a 1:1 copy of the upstream SDK, provided for convenience of download
+          by the [setup-fm1-toolchain](https://github.com/${{ github.repository }}) GitHub Action.
+
+          **Source:** [\`${SDK_TAG}\`](https://gitee.com/${SDK_REPO}/releases/tag/${SDK_TAG})
+          **SHA256:** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
+          EOF
+          )"
+          echo "[sdk] Published release $RELEASE_TAG"
+
+      - name: Attest SDK release
+        if: >-
+          (steps.sdk.outputs.new == 'true' || inputs.force)
+          && steps.sdk-exists.outputs.exists != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            /tmp/sdk-work/sdk-${{ steps.sdk.outputs.latest-short }}.tar.xz
+
+      # ── Mirror toolchain ───────────────────────────────────────────
+
+      - name: Check if toolchain mirror release exists
+        id: tc-exists
+        if: steps.toolchain.outputs.new == 'true' || inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="toolchain-${{ steps.toolchain.outputs.latest }}"
+          if gh release view "$TAG" --json tagName -q .tagName >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and publish toolchain
+        if: >-
+          (steps.toolchain.outputs.new == 'true' || inputs.force)
+          && steps.tc-exists.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAIN_URL: ${{ steps.current.outputs.toolchain-url }}
+          TC_VERSION: ${{ steps.toolchain.outputs.latest }}
+        run: |
+          set -euo pipefail
+          echo "[toolchain] Downloading from: $TOOLCHAIN_URL"
+          mkdir -p /tmp/tc-work/raw
+          curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C /tmp/tc-work/raw
+          TC_DIR=$(ls -d /tmp/tc-work/raw/jieli-linux-toolchains-* | sort | tail -1)
+          mv "$TC_DIR" /tmp/tc-work/toolchain
+
+          ARCHIVE="toolchain-${TC_VERSION}.tar.xz"
+          cd /tmp/tc-work
+          tar -cf - toolchain | xz -T0 > "$ARCHIVE"
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          echo "[toolchain] SHA256: $(cat "${ARCHIVE}.sha256")"
+
+          RELEASE_TAG="toolchain-${TC_VERSION}"
+          gh release create "$RELEASE_TAG" \
+            "$ARCHIVE" "${ARCHIVE}.sha256" \
+            --repo "${{ github.repository }}" \
+            --prerelease \
+            --title "Toolchain ${TC_VERSION} (mirror)" \
+            --notes "$(cat <<EOF
+          **Mirror of JieLi Linux Toolchain ${TC_VERSION}**
+
+          This is a 1:1 copy of the upstream toolchain, provided for convenience of download
+          by the [setup-fm1-toolchain](https://github.com/${{ github.repository }}) GitHub Action.
+
+          **Source:** $TOOLCHAIN_URL
+          **SHA256:** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
+          EOF
+          )"
+          echo "[toolchain] Published release $RELEASE_TAG"
+
+      - name: Attest toolchain release
+        if: >-
+          (steps.toolchain.outputs.new == 'true' || inputs.force)
+          && steps.tc-exists.outputs.exists != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            /tmp/tc-work/toolchain-${{ steps.toolchain.outputs.latest }}.tar.xz
+
+      # ── Smoke test ─────────────────────────────────────────────────
+
+      - name: Smoke test
+        if: >-
+          (steps.sdk.outputs.new == 'true' || steps.toolchain.outputs.new == 'true' || inputs.force)
+        run: |
+          set -euo pipefail
+          # Use freshly downloaded artifacts if available, fall back to re-download
+          if [ -d /tmp/sdk-work/sdk ]; then
+            SDK_PATH=/tmp/sdk-work/sdk
+          else
+            SDK_PATH="$HOME/.fm1-toolchain/AC79_SDK"
+          fi
+          if [ -d /tmp/tc-work/toolchain ]; then
+            TC_PATH=/tmp/tc-work/toolchain
+          else
+            TC_PATH="$HOME/.fm1-toolchain/toolchain"
+          fi
+
+          export JIELI_TOOLCHAIN="$TC_PATH"
+          export AC79_SDK="$SDK_PATH"
+          make -C smoke-test check
+
