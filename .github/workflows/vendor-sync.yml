@@ -114,6 +114,9 @@ jobs:
           done
           test -f /tmp/sdk-work/sdk.zip || { echo "::error::SDK download failed"; exit 1; }
 
+          echo "[sdk] Origin checksum (upstream zip):"
+          (cd /tmp/sdk-work && sha256sum sdk.zip | tee origin.sha256)
+
           unzip -q /tmp/sdk-work/sdk.zip -d /tmp/sdk-work/raw
           SDK_DIR=$(ls -d /tmp/sdk-work/raw/*/ | head -1)
           mv "$SDK_DIR" /tmp/sdk-work/sdk
@@ -122,7 +125,16 @@ jobs:
           cd /tmp/sdk-work
           tar -cf - sdk | xz -T0 > "$ARCHIVE"
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
-          echo "[sdk] SHA256: $(cat "${ARCHIVE}.sha256")"
+          echo "[sdk] Archive checksum:"
+          cat "${ARCHIVE}.sha256"
+
+          echo "[sdk] Verifying archive integrity..."
+          mkdir -p /tmp/sdk-verify
+          tar -xJf "$ARCHIVE" -C /tmp/sdk-verify
+          test -f /tmp/sdk-verify/sdk/Makefile \
+            || { echo "::error::SDK archive verification failed: Makefile missing"; exit 1; }
+          rm -rf /tmp/sdk-verify
+          echo "[sdk] Archive verified"
 
           RELEASE_TAG="sdk-${SDK_SHORT}"
           gh release create "$RELEASE_TAG" \
@@ -137,7 +149,8 @@ jobs:
           by the [setup-fm1-toolchain](https://github.com/${{ github.repository }}) GitHub Action.
 
           **Source:** [\`${SDK_TAG}\`](https://gitee.com/${SDK_REPO}/releases/tag/${SDK_TAG})
-          **SHA256:** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
+          **Origin SHA256 (upstream zip):** \`$(cut -d' ' -f1 origin.sha256)\`
+          **Archive SHA256 (tar.xz):** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
           EOF
           )"
           echo "[sdk] Published release $RELEASE_TAG"
@@ -178,15 +191,30 @@ jobs:
           set -euo pipefail
           echo "[toolchain] Downloading from: $TOOLCHAIN_URL"
           mkdir -p /tmp/tc-work/raw
-          curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C /tmp/tc-work/raw
+          curl -fSL --retry 3 -o /tmp/tc-work/upstream.tar.xz "$TOOLCHAIN_URL"
+
+          echo "[toolchain] Origin checksum (upstream tar.xz):"
+          (cd /tmp/tc-work && sha256sum upstream.tar.xz | tee origin.sha256)
+
+          tar -xJf /tmp/tc-work/upstream.tar.xz -C /tmp/tc-work/raw
           TC_DIR=$(ls -d /tmp/tc-work/raw/jieli-linux-toolchains-* | sort | tail -1)
           mv "$TC_DIR" /tmp/tc-work/toolchain
+          rm /tmp/tc-work/upstream.tar.xz
 
           ARCHIVE="toolchain-${TC_VERSION}.tar.xz"
           cd /tmp/tc-work
           tar -cf - toolchain | xz -T0 > "$ARCHIVE"
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
-          echo "[toolchain] SHA256: $(cat "${ARCHIVE}.sha256")"
+          echo "[toolchain] Archive checksum:"
+          cat "${ARCHIVE}.sha256"
+
+          echo "[toolchain] Verifying archive integrity..."
+          mkdir -p /tmp/tc-verify
+          tar -xJf "$ARCHIVE" -C /tmp/tc-verify
+          test -x /tmp/tc-verify/toolchain/pi32v2/bin/clang \
+            || { echo "::error::Toolchain archive verification failed: clang missing or not executable"; exit 1; }
+          rm -rf /tmp/tc-verify
+          echo "[toolchain] Archive verified"
 
           RELEASE_TAG="toolchain-${TC_VERSION}"
           gh release create "$RELEASE_TAG" \
@@ -201,7 +229,8 @@ jobs:
           by the [setup-fm1-toolchain](https://github.com/${{ github.repository }}) GitHub Action.
 
           **Source:** $TOOLCHAIN_URL
-          **SHA256:** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
+          **Origin SHA256 (upstream tar.xz):** \`$(cut -d' ' -f1 origin.sha256)\`
+          **Archive SHA256 (tar.xz):** \`$(cut -d' ' -f1 "${ARCHIVE}.sha256")\`
           EOF
           )"
           echo "[toolchain] Published release $RELEASE_TAG"

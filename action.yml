@@ -113,6 +113,8 @@ runs:
             sleep 20
           done
           test -f /tmp/fm1-sdk-fallback/sdk.zip || { echo "::error::SDK download failed"; exit 1; }
+          echo "Upstream SDK checksum:"
+          sha256sum /tmp/fm1-sdk-fallback/sdk.zip
           unzip -q /tmp/fm1-sdk-fallback/sdk.zip -d /tmp/fm1-sdk-fallback/raw
           SDK_DIR=$(ls -d /tmp/fm1-sdk-fallback/raw/*/ | head -1)
           mv "$SDK_DIR" "$INSTALL_DIR/AC79_SDK"
@@ -153,7 +155,10 @@ runs:
           echo "::warning::Mirror release $RELEASE_TAG not found, falling back to upstream (SLOW)"
           echo "Downloading from: $TOOLCHAIN_URL"
           mkdir -p /tmp/fm1-tc-fallback
-          curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C /tmp/fm1-tc-fallback
+          curl -fSL --retry 3 -o /tmp/fm1-tc-fallback/upstream.tar.xz "$TOOLCHAIN_URL"
+          echo "Upstream toolchain checksum:"
+          sha256sum /tmp/fm1-tc-fallback/upstream.tar.xz
+          tar -xJf /tmp/fm1-tc-fallback/upstream.tar.xz -C /tmp/fm1-tc-fallback
           TC_DIR=$(ls -d /tmp/fm1-tc-fallback/jieli-linux-toolchains-* | sort | tail -1)
           mv "$TC_DIR" "$INSTALL_DIR/toolchain"
           rm -rf /tmp/fm1-tc-fallback
