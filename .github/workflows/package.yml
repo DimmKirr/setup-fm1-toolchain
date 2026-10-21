@@ -1,4 +1,4 @@
-name: Package toolchain bundle
+name: Release action
 
 on:
   push:
@@ -11,123 +11,55 @@ permissions:
   attestations: write
 
 jobs:
-  package:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - sdk-version: '1.2.14'
+            toolchain-version: '20260730.1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Install toolchain from mirror releases
+        uses: ./
+        with:
+          sdk-version: ${{ matrix.sdk-version }}
+          toolchain-version: ${{ matrix.toolchain-version }}
+
+      - name: Smoke test
+        run: make -C smoke-test check
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          persist-credentials: false
 
-      - name: Load pinned versions
-        run: |
-          set -euo pipefail
-          source versions.env
-          # Derive bundle version from the git tag (v1.0.2 -> 1.0.2), fall back to versions.env
-          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9] ]]; then
-            BUNDLE_VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          echo "SDK_TAG=$SDK_TAG"               >> "$GITHUB_ENV"
-          echo "SDK_REPO=$SDK_REPO"             >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_URL=$TOOLCHAIN_URL"   >> "$GITHUB_ENV"
-          echo "BUNDLE_VERSION=$BUNDLE_VERSION" >> "$GITHUB_ENV"
-
-      - name: Download SDK and toolchain in parallel
-        run: |
-          set -euo pipefail
-
-          download_sdk() {
-            url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
-            echo "[sdk] Downloading from: $url"
-            for i in 1 2 3; do
-              curl -fSL --retry 3 -o sdk.zip "$url" && break
-              echo "[sdk] Attempt $i failed, retrying in 20s..."
-              rm -f sdk.zip
-              sleep 20
-            done
-            test -f sdk.zip || { echo "[sdk] Download failed"; exit 1; }
-            unzip -q sdk.zip -d sdk-raw
-            SDK_DIR=$(ls -d sdk-raw/*/ | head -1)
-            mv "$SDK_DIR" sdk
-            rm -rf sdk-raw sdk.zip
-            echo "[sdk] Done: $(ls sdk/ | head -5)"
-          }
-
-          download_toolchain() {
-            echo "[toolchain] Downloading from: $TOOLCHAIN_URL"
-            mkdir -p toolchain-raw
-            curl -fSL --retry 3 "$TOOLCHAIN_URL" | tar -xJ -C toolchain-raw
-            TC_DIR=$(ls -d toolchain-raw/jieli-linux-toolchains-* | sort | tail -1)
-            mv "$TC_DIR" toolchain
-            rm -rf toolchain-raw
-            TC_VERSION=$(echo "$TC_DIR" | grep -oP 'jieli-linux-toolchains-\K.*' || echo "unknown")
-            echo "$TC_VERSION" > /tmp/tc-version
-            echo "[toolchain] Done: $TC_VERSION"
-          }
-
-          download_sdk &
-          download_toolchain &
-          wait
-
-          TC_VERSION=$(cat /tmp/tc-version)
-          echo "TOOLCHAIN_ACTUAL_VERSION=$TC_VERSION" >> "$GITHUB_ENV"
-
-      - name: Derive SDK short version
-        run: |
-          set -euo pipefail
-          SDK_SHORT=$(echo "$SDK_TAG" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-          echo "SDK_SHORT=$SDK_SHORT" >> "$GITHUB_ENV"
-
-      - name: Assemble bundle directory
-        run: |
-          set -euo pipefail
-          BUNDLE_NAME="fm1-toolchain-${BUNDLE_VERSION}-sdk${SDK_SHORT}-tc${TOOLCHAIN_ACTUAL_VERSION}"
-          mkdir -p "$BUNDLE_NAME"
-          mv sdk "$BUNDLE_NAME/AC79_SDK"
-          mv toolchain "$BUNDLE_NAME/toolchain"
-          cp versions.env "$BUNDLE_NAME/"
-          echo "TOOLCHAIN_ACTUAL_VERSION=$TOOLCHAIN_ACTUAL_VERSION" >> "$BUNDLE_NAME/versions.env"
-          echo "PACKAGED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$BUNDLE_NAME/versions.env"
-          echo "BUNDLE_NAME=$BUNDLE_NAME" >> "$GITHUB_ENV"
-
-      - name: Smoke test before packaging
-        run: |
-          set -euo pipefail
-          export JIELI_TOOLCHAIN="$(pwd)/$BUNDLE_NAME/toolchain"
-          export AC79_SDK="$(pwd)/$BUNDLE_NAME/AC79_SDK"
-          make -C smoke-test check
-
-      - name: Bundle into tar.xz
-        run: |
-          set -euo pipefail
-          tar -cf - "$BUNDLE_NAME" | xz -T0 > "${BUNDLE_NAME}.tar.xz"
-          sha256sum "${BUNDLE_NAME}.tar.xz" | tee SHA256SUMS
-          echo "BUNDLE_FILE=${BUNDLE_NAME}.tar.xz" >> "$GITHUB_ENV"
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            "$BUNDLE_FILE" SHA256SUMS \
-            --title "FM1 Toolchain $BUNDLE_VERSION (SDK $SDK_SHORT / Toolchain $TOOLCHAIN_ACTUAL_VERSION)" \
-            --notes "**SDK:** \`$SDK_TAG\` (v$SDK_SHORT)
-          **Toolchain:** \`$TOOLCHAIN_ACTUAL_VERSION\`
+            --title "FM1 Toolchain Action ${{ steps.version.outputs.version }}" \
+            --notes "$(cat <<'EOF'
+          **setup-fm1-toolchain** action release.
 
-          \`\`\`yaml
+          ```yaml
           - uses: dimmkirr/setup-fm1-toolchain@v1
-          \`\`\`"
+          ```
 
-      - name: Attest release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
-        with:
-          subject-path: |
-            ${{ env.BUNDLE_FILE }}
-            SHA256SUMS
+          SDK and toolchain binaries are downloaded from separate mirror releases
+          (see pre-releases). Override versions with `sdk-version` / `toolchain-version` inputs.
+          EOF
+          )"
 
       - name: Update major version tag
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -136,11 +68,3 @@ jobs:
             -f sha="$(git rev-parse HEAD)" -F force=true 2>/dev/null \
           || gh api -X POST repos/${{ github.repository }}/git/refs \
             -f ref="refs/tags/$MAJOR" -f sha="$(git rev-parse HEAD)"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: fm1-toolchain-bundle
-          path: |
-            fm1-toolchain-*.tar.xz
-            SHA256SUMS
-          if-no-files-found: error
