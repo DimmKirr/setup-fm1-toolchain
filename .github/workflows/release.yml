@@ -1,9 +1,8 @@
-name: Release action
+name: Release
 
 on:
   push:
     tags: ['v[0-9]*']
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,7 +15,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - sdk-version: '1.2.14'
+          - sdk-version: '1.2.14_2026-10-13'
             toolchain-version: '20260730.1'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

@@ -1,10 +1,10 @@
 # setup-fm1-toolchain
 
-GitHub Action and local installer for the JieLi AC79 SDK and Linux toolchain, used to build FM1 firmware.
+GitHub Action that installs the JieLi AC79 SDK and Linux toolchain for FM1 firmware builds.
 
-Packages the SDK and toolchain from upstream Chinese sources (gitee, pkgman.jieliapp.com) into a single release asset hosted on GitHub. No need to download from gitee on every CI run.
+SDK and toolchain binaries are mirrored as separate pre-release assets on this repo (published automatically by the `vendor-sync` workflow). The action downloads them from the mirror, with a fallback to the upstream sources if a mirror release doesn't exist yet.
 
-## CI Usage
+## Usage
 
 ```yaml
 jobs:
@@ -16,58 +16,72 @@ jobs:
       - run: make firmware
 ```
 
-The action sets these environment variables:
-- `JIELI_TOOLCHAIN` - path to the JieLi Linux toolchain
-- `AC79_SDK` - path to the AC79 SDK
-- Adds `$JIELI_TOOLCHAIN/bin` to `PATH`
+### Inputs
 
-Pin to a specific release to lock the SDK and toolchain versions:
-
-```yaml
-- uses: dimmkirr/setup-fm1-toolchain@v1.0.2
-```
+| Input | Default | Description |
+|-------|---------|-------------|
+| `sdk-version` | `1.2.14_2026-10-13` | SDK version to install (gitee tag is derived as `AC79NN_SDK_V` + version) |
+| `toolchain-version` | `20260730.1` | Toolchain version to install |
+| `sdk-url` | `https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK` | Upstream SDK repo URL (used only for fallback) |
+| `toolchain-url` | `https://pkgman.jieliapp.com/s/linux-toolchain` | Upstream toolchain URL (used only for fallback) |
+| `github-token` | `${{ github.token }}` | Token for downloading release assets |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `sdk-version` | SDK version included in the installed bundle |
-| `toolchain-version` | Toolchain version included in the installed bundle |
+| `sdk-version` | SDK version installed |
+| `toolchain-version` | Toolchain version installed |
 | `toolchain-path` | Absolute path to the toolchain |
 | `sdk-path` | Absolute path to the SDK |
-| `cache-hit` | Whether the bundle was restored from cache |
+| `cache-hit` | Whether the toolchain was restored from cache |
 
-## Local Install
+### Environment variables
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/dimmkirr/setup-fm1-toolchain/main/install.sh | bash
+The action sets:
+- `JIELI_TOOLCHAIN` — path to the JieLi Linux toolchain root
+- `AC79_SDK` — path to the AC79 SDK
+- Adds `$JIELI_TOOLCHAIN/pi32v2/bin` to `PATH`
+
+## Local usage (Taskfile)
+
+The included `Taskfile.yml` is a local equivalent of the GitHub Action. Import it into your firmware project:
+
+```yaml
+# Taskfile.yml (your project)
+version: '3'
+
+includes:
+  fm1-platform:
+    taskfile: https://raw.githubusercontent.com/DimmKirr/setup-fm1-toolchain/v1/Taskfile.yml
+
+tasks:
+  build:
+    deps: [fm1-platform:download]
+    cmds:
+      - make firmware
+    env:
+      JIELI_TOOLCHAIN: '{{.HOME}}/.fm1-toolchain/toolchain'
+      AC79_SDK: '{{.HOME}}/.fm1-toolchain/AC79_SDK'
 ```
 
-Or a specific version:
+Commands:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/dimmkirr/setup-fm1-toolchain/main/install.sh | bash -s v1.0.0
-```
+| Command | Description |
+|---------|-------------|
+| `task fm1-platform:download` | Download SDK, toolchain, and build deps |
+| `task fm1-platform:download:sdk` | SDK only |
+| `task fm1-platform:download:toolchain` | Toolchain only |
+| `task fm1-platform:download:deps` | Build dependencies only |
+| `task fm1-platform:remove` | Remove `~/.fm1-toolchain` |
 
-Custom install location:
+Installs to `~/.fm1-toolchain/` (same location as the GitHub Action). Downloads from the GitHub mirror first, falls back to upstream if the mirror release doesn't exist.
 
-```bash
-FM1_TOOLCHAIN_HOME=/opt/fm1 bash install.sh
-```
+## How it works
 
-## How It Works
-
-1. **package.yml** downloads the SDK zip from gitee and toolchain from pkgman.jieliapp.com, bundles them into a `.tar.xz`, and publishes it as a GitHub Release
-2. **action.yml** (composite action) restores the bundle from `actions/cache` or downloads from GitHub Releases, extracts, and sets env vars
-3. **track.yml** runs weekly to check gitee and pkgman for new versions, creates a draft PR when updates are found
-
-## Versioning
-
-The action tag determines which SDK and toolchain bundle gets installed. Each tag (e.g. `v1.0.2`) has a corresponding GitHub Release with the pre-built bundle. The `@v1` major tag always points to the latest `v1.x.x` release.
-
-Release titles and asset filenames show exactly which SDK and toolchain versions are bundled (e.g. `fm1-toolchain-1.0.2-sdk1.2.14-tc20260730.1.tar.xz`).
-
-Upstream versions are pinned in `versions.env`. The cron workflow (`track.yml`) monitors for updates and creates PRs. After merging a version bump, tag `vX.Y.Z` to trigger packaging and create the release.
+1. **vendor-sync.yml** runs weekly (and on manual dispatch) to check upstream for new SDK tags and toolchain versions. New versions are downloaded, repackaged as `.tar.xz`, and published as pre-release mirror releases (`sdk-<ver>`, `toolchain-<ver>`) with SHA256 checksums and build provenance attestation.
+2. **action.yml** restores from `actions/cache` or downloads the SDK and toolchain from their respective mirror releases, verifies checksums, and sets environment variables. Falls back to upstream sources with a warning if a mirror release is missing.
+3. **release.yml** (Release workflow) tests the action against a version matrix, then creates a GitHub Release on tag push and updates the `v1` major tag.
 
 ## License
 

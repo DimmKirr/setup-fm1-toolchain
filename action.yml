@@ -6,11 +6,21 @@ branding:
 
 inputs:
   sdk-version:
-    description: 'SDK version to install (e.g. 1.2.14). Defaults to the version pinned in this action.'
+    description: 'SDK version to install (e.g. 1.2.14_2026-10-13)'
     required: false
+    default: '1.2.14_2026-10-13'
   toolchain-version:
-    description: 'Toolchain version to install (e.g. 20260730.1). Defaults to the version pinned in this action.'
+    description: 'Toolchain version to install (e.g. 20260730.1)'
     required: false
+    default: '20260730.1'
+  sdk-url:
+    description: 'Upstream SDK repo URL for fallback (gitee)'
+    required: false
+    default: 'https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK'
+  toolchain-url:
+    description: 'Upstream toolchain download URL for fallback'
+    required: false
+    default: 'https://pkgman.jieliapp.com/s/linux-toolchain'
   github-token:
     description: 'GitHub token for downloading release assets'
     required: false
@@ -41,26 +51,12 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        source "${{ github.action_path }}/versions.env"
-
-        # Derive default SDK short version from the pinned tag
-        DEFAULT_SDK=$(echo "$SDK_TAG" | grep -oP 'V\K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-
-        # Derive default toolchain version (stored in versions.env after mirror.yml runs)
-        DEFAULT_TC="${TOOLCHAIN_VERSION:-}"
-
-        SDK_VER="${{ inputs.sdk-version }}"
-        TC_VER="${{ inputs.toolchain-version }}"
-        SDK_VER="${SDK_VER:-$DEFAULT_SDK}"
-        TC_VER="${TC_VER:-$DEFAULT_TC}"
-
-        echo "sdk-version=$SDK_VER"       >> "$GITHUB_OUTPUT"
-        echo "toolchain-version=$TC_VER"  >> "$GITHUB_OUTPUT"
-        echo "sdk-tag=$SDK_TAG"           >> "$GITHUB_OUTPUT"
-        echo "sdk-repo=$SDK_REPO"         >> "$GITHUB_OUTPUT"
-        echo "toolchain-url=$TOOLCHAIN_URL" >> "$GITHUB_OUTPUT"
-
-        echo "Resolved SDK: $SDK_VER, Toolchain: $TC_VER"
+        echo "sdk-version=${{ inputs.sdk-version }}"           >> "$GITHUB_OUTPUT"
+        echo "toolchain-version=${{ inputs.toolchain-version }}" >> "$GITHUB_OUTPUT"
+        echo "sdk-tag=AC79NN_SDK_V${{ inputs.sdk-version }}"  >> "$GITHUB_OUTPUT"
+        echo "sdk-url=${{ inputs.sdk-url }}"                   >> "$GITHUB_OUTPUT"
+        echo "toolchain-url=${{ inputs.toolchain-url }}"       >> "$GITHUB_OUTPUT"
+        echo "Resolved SDK: ${{ inputs.sdk-version }}, Toolchain: ${{ inputs.toolchain-version }}"
 
     - name: Restore from cache
       id: cache
@@ -75,7 +71,7 @@ runs:
       env:
         SDK_VER: ${{ steps.version.outputs.sdk-version }}
         SDK_TAG: ${{ steps.version.outputs.sdk-tag }}
-        SDK_REPO: ${{ steps.version.outputs.sdk-repo }}
+        SDK_URL: ${{ steps.version.outputs.sdk-url }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
@@ -103,7 +99,7 @@ runs:
           rm -rf /tmp/fm1-sdk
         else
           echo "::warning::Mirror release $RELEASE_TAG not found, falling back to upstream (SLOW)"
-          url="https://gitee.com/${SDK_REPO}/repository/archive/${SDK_TAG}.zip"
+          url="${SDK_URL}/repository/archive/${SDK_TAG}.zip"
           echo "Downloading from: $url"
           mkdir -p /tmp/fm1-sdk-fallback
           for i in 1 2 3; do
