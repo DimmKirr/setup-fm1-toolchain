@@ -251,16 +251,12 @@ jobs:
           (steps.sdk.outputs.new == 'true' || steps.toolchain.outputs.new == 'true' || inputs.force)
         run: |
           set -euo pipefail
-          # Use freshly downloaded artifacts if available, fall back to re-download
-          if [ -d /tmp/sdk-work/sdk ]; then
-            SDK_PATH=/tmp/sdk-work/sdk
-          else
-            SDK_PATH="$HOME/.fm1-toolchain/AC79_SDK"
-          fi
-          if [ -d /tmp/tc-work/toolchain ]; then
-            TC_PATH=/tmp/tc-work/toolchain
-          else
-            TC_PATH="$HOME/.fm1-toolchain/toolchain"
+          SDK_PATH=/tmp/sdk-work/sdk
+          TC_PATH=/tmp/tc-work/toolchain
+
+          if [ ! -d "$SDK_PATH" ] || [ ! -d "$TC_PATH" ]; then
+            echo "Skipping smoke test — artifacts were not downloaded (mirror releases already exist)"
+            exit 0
           fi
 
           export JIELI_TOOLCHAIN="$TC_PATH"
