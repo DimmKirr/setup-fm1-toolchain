@@ -123,7 +123,31 @@ tasks:
     status:
       - dpkg -s libharfbuzz-dev libfribidi-dev libraqm-dev >/dev/null 2>&1
       - python3 -c "import PIL, fontTools, mido" 2>/dev/null
-      - '{{if eq .IS_ARM "true"}}command -v qemu-x86_64-static >/dev/null && qemu-x86_64-static --version >/dev/null{{else}}true{{end}}'
+      - '{{if eq .IS_ARM "true"}}command -v qemu-x86_64-static >/dev/null && qemu-x86_64-static --version >/dev/null && grep -q enabled /proc/sys/fs/binfmt_misc/qemu-x86_64 2>/dev/null{{else}}true{{end}}'
+
+  download:verify:
+    desc: Verify the toolchain runs on this system
+    cmds:
+      - |
+        set -euo pipefail
+        TC="{{.INSTALL_DIR}}/toolchain/pi32v2/bin/clang"
+        if [ ! -x "$TC" ]; then
+          echo "ERROR: toolchain compiler not found at $TC" >&2
+          exit 1
+        fi
+        if ! "$TC" --version >/dev/null 2>&1; then
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "ERROR: toolchain compiler failed to run. On ARM, ensure qemu-user-static is installed and binfmt_misc is registered:" >&2
+            echo "  sudo apt-get install -y qemu-user-static binfmt-support" >&2
+            echo "  sudo systemctl restart binfmt-support" >&2
+          else
+            echo "ERROR: toolchain compiler failed to run." >&2
+          fi
+          exit 1
+        fi
+        echo "[verify] Toolchain OK: $("$TC" --version | head -1)"
+    status:
+      - '{{.INSTALL_DIR}}/toolchain/pi32v2/bin/clang --version >/dev/null 2>&1'
 
   remove:
     desc: Remove installed SDK and toolchain
