@@ -9,6 +9,14 @@ on:
         description: 'Re-publish even if versions already mirrored'
         type: boolean
         default: false
+      sdk-count:
+        description: 'Number of recent SDK versions to mirror'
+        type: number
+        default: 3
+      toolchain-count:
+        description: 'Number of recent toolchain versions to mirror'
+        type: number
+        default: 1
 
 permissions:
   contents: write
@@ -16,78 +24,105 @@ permissions:
   attestations: write
 
 jobs:
-  sync:
+  discover:
     runs-on: ubuntu-24.04
+    outputs:
+      sdk-matrix: ${{ steps.sdk.outputs.matrix }}
+      toolchain-matrix: ${{ steps.toolchain.outputs.matrix }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-
-      - name: Set upstream sources
-        id: current
-        run: |
-          echo "sdk-url=https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK" >> "$GITHUB_OUTPUT"
-          echo "toolchain-url=https://pkgman.jieliapp.com/s/linux-toolchain" >> "$GITHUB_OUTPUT"
-
-      # ── Check upstream ─────────────────────────────────────────────
-
-      - name: Detect latest SDK tag
+      - name: Discover SDK versions
         id: sdk
         run: |
           set -euo pipefail
-          SDK_URL="${{ steps.current.outputs.sdk-url }}"
+          COUNT="${{ inputs.sdk-count || 3 }}"
+          SDK_URL="https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK"
           SDK_REPO_PATH=$(echo "$SDK_URL" | sed 's|https://gitee.com/||')
+
           TAGS=$(curl -fsSL "https://gitee.com/api/v5/repos/${SDK_REPO_PATH}/tags?per_page=100")
-          LATEST=$(echo "$TAGS" | jq -r '.[-1].name')
-          LATEST_VER=$(echo "$LATEST" | sed 's/^AC79NN_SDK_V//')
 
-          echo "Latest SDK: $LATEST ($LATEST_VER)"
-          echo "latest-tag=$LATEST"       >> "$GITHUB_OUTPUT"
-          echo "latest-ver=$LATEST_VER"   >> "$GITHUB_OUTPUT"
+          MATRIX=$(echo "$TAGS" | jq -c --argjson count "$COUNT" '
+            [ .[] | {
+              tag: .name,
+              version: (.name | sub("^AC79NN_SDK_V"; "")),
+              date: .commit.date
+            } ]
+            | sort_by(.date)
+            | reverse
+            | .[:$count]
+            | { include: [ .[] | {
+                version: .version,
+                tag: .tag,
+                url: "https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK"
+              } ] }
+          ')
 
-      - name: Detect latest toolchain version
+          echo "SDK versions to mirror:"
+          echo "$MATRIX" | jq -r '.include[].version'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+      - name: Discover toolchain versions
         id: toolchain
         run: |
           set -euo pipefail
+          COUNT="${{ inputs.toolchain-count || 1 }}"
           mkdir -p /tmp/tc-check
-          curl -fsSL --retry 3 "${{ steps.current.outputs.toolchain-url }}" \
+          curl -fsSL --retry 3 "https://pkgman.jieliapp.com/s/linux-toolchain" \
             | tar -xJ -C /tmp/tc-check
-          NEW_DIR=$(ls -d /tmp/tc-check/jieli-linux-toolchains-* | sort | tail -1)
-          NEW_VERSION=$(basename "$NEW_DIR" | sed 's/jieli-linux-toolchains-//')
+          VERSION=$(ls -d /tmp/tc-check/jieli-linux-toolchains-* | sort | tail -1 | xargs basename | sed 's/jieli-linux-toolchains-//')
           rm -rf /tmp/tc-check
 
-          echo "Latest toolchain: $NEW_VERSION"
-          echo "latest=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          MATRIX=$(jq -nc --arg ver "$VERSION" '{
+            include: [{ version: $ver, url: "https://pkgman.jieliapp.com/s/linux-toolchain" }]
+          }')
 
-      # ── Mirror SDK ─────────────────────────────────────────────────
+          echo "Toolchain versions to mirror:"
+          echo "$MATRIX" | jq -r '.include[].version'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-      - name: Check if SDK mirror release exists
-        id: sdk-exists
+  mirror-sdk:
+    needs: discover
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.sdk-matrix) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Check if mirror release exists with checksum
+        id: exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="sdk-${{ steps.sdk.outputs.latest-ver }}"
-          if gh release view "$TAG" --json tagName -q .tagName >/dev/null 2>&1; then
+          set -euo pipefail
+          TAG="sdk-${{ matrix.version }}"
+          ARCHIVE="sdk-${{ matrix.version }}.tar.xz"
+
+          if gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null \
+               | grep -qF "${ARCHIVE}.sha256"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Mirror release $TAG exists with checksum, skipping"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Mirror release $TAG missing or no checksum, will download"
           fi
 
-      - name: Delete existing SDK release (force)
-        if: inputs.force && steps.sdk-exists.outputs.exists == 'true'
+      - name: Delete existing release (force)
+        if: inputs.force && steps.exists.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release delete "sdk-${{ steps.sdk.outputs.latest-ver }}" --repo "${{ github.repository }}" --cleanup-tag --yes
+        run: gh release delete "sdk-${{ matrix.version }}" --repo "${{ github.repository }}" --cleanup-tag --yes
 
       - name: Download and publish SDK
-        if: steps.sdk-exists.outputs.exists != 'true' || inputs.force
+        if: steps.exists.outputs.exists != 'true' || inputs.force
         env:
           GH_TOKEN: ${{ github.token }}
-          SDK_TAG: ${{ steps.sdk.outputs.latest-tag }}
-          SDK_URL: ${{ steps.current.outputs.sdk-url }}
-          SDK_VER: ${{ steps.sdk.outputs.latest-ver }}
+          SDK_TAG: ${{ matrix.tag }}
+          SDK_URL: ${{ matrix.url }}
+          SDK_VER: ${{ matrix.version }}
         run: |
           set -euo pipefail
           url="${SDK_URL}/repository/archive/${SDK_TAG}.zip"
-          echo "[sdk] Downloading from: $url"
+          echo "[sdk] Downloading $SDK_VER from: $url"
           mkdir -p /tmp/sdk-work
           for i in 1 2 3; do
             curl -fSL --retry 3 -o /tmp/sdk-work/sdk.zip "$url" && break
@@ -139,38 +174,51 @@ jobs:
           echo "[sdk] Published release $RELEASE_TAG"
 
       - name: Attest SDK release
-        if: steps.sdk-exists.outputs.exists != 'true' || inputs.force
+        if: steps.exists.outputs.exists != 'true' || inputs.force
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
-            /tmp/sdk-work/sdk-${{ steps.sdk.outputs.latest-ver }}.tar.xz
+            /tmp/sdk-work/sdk-${{ matrix.version }}.tar.xz
 
-      # ── Mirror toolchain ───────────────────────────────────────────
+  mirror-toolchain:
+    needs: discover
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.toolchain-matrix) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - name: Check if toolchain mirror release exists
-        id: tc-exists
+      - name: Check if mirror release exists with checksum
+        id: exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="toolchain-${{ steps.toolchain.outputs.latest }}"
-          if gh release view "$TAG" --json tagName -q .tagName >/dev/null 2>&1; then
+          set -euo pipefail
+          TAG="toolchain-${{ matrix.version }}"
+          ARCHIVE="toolchain-${{ matrix.version }}.tar.xz"
+
+          if gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null \
+               | grep -qF "${ARCHIVE}.sha256"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Mirror release $TAG exists with checksum, skipping"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Mirror release $TAG missing or no checksum, will download"
           fi
 
-      - name: Delete existing toolchain release (force)
-        if: inputs.force && steps.tc-exists.outputs.exists == 'true'
+      - name: Delete existing release (force)
+        if: inputs.force && steps.exists.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release delete "toolchain-${{ steps.toolchain.outputs.latest }}" --repo "${{ github.repository }}" --cleanup-tag --yes
+        run: gh release delete "toolchain-${{ matrix.version }}" --repo "${{ github.repository }}" --cleanup-tag --yes
 
       - name: Download and publish toolchain
-        if: steps.tc-exists.outputs.exists != 'true' || inputs.force
+        if: steps.exists.outputs.exists != 'true' || inputs.force
         env:
           GH_TOKEN: ${{ github.token }}
-          TOOLCHAIN_URL: ${{ steps.current.outputs.toolchain-url }}
-          TC_VERSION: ${{ steps.toolchain.outputs.latest }}
+          TOOLCHAIN_URL: ${{ matrix.url }}
+          TC_VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
           echo "[toolchain] Downloading from: $TOOLCHAIN_URL"
@@ -220,26 +268,19 @@ jobs:
           echo "[toolchain] Published release $RELEASE_TAG"
 
       - name: Attest toolchain release
-        if: steps.tc-exists.outputs.exists != 'true' || inputs.force
+        if: steps.exists.outputs.exists != 'true' || inputs.force
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
-            /tmp/tc-work/toolchain-${{ steps.toolchain.outputs.latest }}.tar.xz
+            /tmp/tc-work/toolchain-${{ matrix.version }}.tar.xz
 
-      # ── Smoke test ─────────────────────────────────────────────────
+  smoke-test:
+    needs: [mirror-sdk, mirror-toolchain]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - name: Smoke test
-        run: |
-          set -euo pipefail
-          SDK_PATH=/tmp/sdk-work/sdk
-          TC_PATH=/tmp/tc-work/toolchain
-
-          if [ ! -d "$SDK_PATH" ] || [ ! -d "$TC_PATH" ]; then
-            echo "Skipping smoke test — artifacts were not downloaded (mirror releases already exist)"
-            exit 0
-          fi
-
-          export JIELI_TOOLCHAIN="$TC_PATH"
-          export AC79_SDK="$SDK_PATH"
-          make -C smoke-test check
-
+      - name: Test action with defaults
+        uses: ./

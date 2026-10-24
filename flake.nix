@@ -14,19 +14,17 @@
       owner = "DimmKirr";
       repo = "setup-fm1-toolchain";
 
-      sdkVersion = "1.2.14_2026-10-13";
+      sdkVersion = "1.2.9";
       toolchainVersion = "20260730.1";
 
       sdk = pkgs.fetchurl {
         url = "https://github.com/${owner}/${repo}/releases/download/sdk-${sdkVersion}/sdk-${sdkVersion}.tar.xz";
-        # Run vendor-sync, then: nix-prefetch-url --type sha256 <url>
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        hash = "sha256-Sz2txbRkZHM/ahJhjifwV2QzQLJAcnHzOUDPSfAPtzs=";
       };
 
       toolchain = pkgs.fetchurl {
         url = "https://github.com/${owner}/${repo}/releases/download/toolchain-${toolchainVersion}/toolchain-${toolchainVersion}.tar.xz";
-        # Run vendor-sync, then: nix-prefetch-url --type sha256 <url>
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        hash = "sha256-0/w76Sz8B8ywrGgrOy5B5NFFk0JgZ+bDxukI2y+QwOA=";
       };
 
       fm1-sdk = pkgs.stdenvNoCC.mkDerivation {

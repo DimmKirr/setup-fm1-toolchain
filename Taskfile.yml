@@ -23,87 +23,245 @@ tasks:
       - task: download:verify
 
   download:sdk:
-    desc: Download AC79 SDK (mirror with checksum, fallback to gitee)
+    desc: Download AC79 SDK (mirror via curl/wget/gh, fallback to gitee)
     cmds:
       - mkdir -p {{.INSTALL_DIR}}
       - |
         set -euo pipefail
         RELEASE_TAG="sdk-{{.SDK_VERSION}}"
-        echo "Trying mirror release $RELEASE_TAG..."
+        REPO="{{.MIRROR_REPO}}"
+        API_URL="https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}"
+        TMPDIR="/tmp/fm1-sdk"
+        rm -rf "$TMPDIR"
+        mkdir -p "$TMPDIR"
+        MIRROR_OK=false
 
-        if gh release download "$RELEASE_TAG" \
-             --repo "{{.MIRROR_REPO}}" \
-             --pattern "sdk-*.tar.xz" \
-             --pattern "sdk-*.tar.xz.sha256" \
-             --dir /tmp/fm1-sdk 2>/dev/null; then
+        # --- try curl ---
+        if command -v curl >/dev/null 2>&1; then
+          echo "[sdk] Trying mirror via curl..."
+          if ASSETS_JSON=$(curl -fsSL "$API_URL" 2>/dev/null); then
+            for suffix in .tar.xz .tar.xz.sha256; do
+              asset_url=$(echo "$ASSETS_JSON" \
+                | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*sdk-[^"]*'"${suffix}"'"' \
+                | head -1 | cut -d'"' -f4)
+              if [ -n "$asset_url" ]; then
+                fname=$(basename "$asset_url")
+                echo "  curl: downloading $fname"
+                if curl -fSL --retry 2 -o "$TMPDIR/$fname" "$asset_url" 2>/dev/null; then
+                  :
+                else
+                  echo "  curl: failed to download $fname"
+                  rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+                  break
+                fi
+              fi
+            done
+            if ls "$TMPDIR"/sdk-*.tar.xz "$TMPDIR"/sdk-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
 
-          cd /tmp/fm1-sdk
+        # --- try wget ---
+        if [ "$MIRROR_OK" = false ] && command -v wget >/dev/null 2>&1; then
+          echo "[sdk] Trying mirror via wget..."
+          rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+          if ASSETS_JSON=$(wget -qO- "$API_URL" 2>/dev/null); then
+            for suffix in .tar.xz .tar.xz.sha256; do
+              asset_url=$(echo "$ASSETS_JSON" \
+                | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*sdk-[^"]*'"${suffix}"'"' \
+                | head -1 | cut -d'"' -f4)
+              if [ -n "$asset_url" ]; then
+                fname=$(basename "$asset_url")
+                echo "  wget: downloading $fname"
+                if wget -q -O "$TMPDIR/$fname" "$asset_url" 2>/dev/null; then
+                  :
+                else
+                  echo "  wget: failed to download $fname"
+                  rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+                  break
+                fi
+              fi
+            done
+            if ls "$TMPDIR"/sdk-*.tar.xz "$TMPDIR"/sdk-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
+
+        # --- try gh ---
+        if [ "$MIRROR_OK" = false ] && command -v gh >/dev/null 2>&1; then
+          echo "[sdk] Trying mirror via gh..."
+          rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+          if gh release download "$RELEASE_TAG" \
+               --repo "$REPO" \
+               --pattern "sdk-*.tar.xz" \
+               --pattern "sdk-*.tar.xz.sha256" \
+               --dir "$TMPDIR" 2>/dev/null; then
+            if ls "$TMPDIR"/sdk-*.tar.xz "$TMPDIR"/sdk-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
+
+        # --- install from mirror ---
+        if [ "$MIRROR_OK" = true ]; then
+          cd "$TMPDIR"
           echo "Verifying checksum..."
           sha256sum -c sdk-*.tar.xz.sha256
-
           echo "Extracting SDK..."
           tar -xJf sdk-*.tar.xz -C "{{.INSTALL_DIR}}"
           mv "{{.INSTALL_DIR}}/sdk" "{{.INSTALL_DIR}}/AC79_SDK"
           cd -
-          rm -rf /tmp/fm1-sdk
+          rm -rf "$TMPDIR"
         else
-          echo "WARNING: Mirror not found, falling back to gitee (slow)"
+          # --- fallback to gitee ---
+          echo "WARNING: All mirror methods failed, falling back to gitee (slow)"
           url="{{.SDK_URL}}/repository/archive/{{.SDK_TAG}}.zip"
           echo "Downloading from: $url"
-          mkdir -p /tmp/fm1-sdk-fallback
+          FBDIR="/tmp/fm1-sdk-fallback"
+          rm -rf "$FBDIR"
+          mkdir -p "$FBDIR"
           for i in 1 2 3; do
-            curl -fSL --retry 3 -o /tmp/fm1-sdk-fallback/sdk.zip "$url" && break
+            if command -v curl >/dev/null 2>&1; then
+              curl -fSL --retry 3 -o "$FBDIR/sdk.zip" "$url" && break
+            elif command -v wget >/dev/null 2>&1; then
+              wget -q -O "$FBDIR/sdk.zip" "$url" && break
+            else
+              echo "ERROR: no download tool available (need curl or wget)" >&2
+              exit 1
+            fi
             echo "Attempt $i failed, retrying in 20s..."
-            rm -f /tmp/fm1-sdk-fallback/sdk.zip
+            rm -f "$FBDIR/sdk.zip"
             sleep 20
           done
-          test -f /tmp/fm1-sdk-fallback/sdk.zip || { echo "SDK download failed"; exit 1; }
+          test -f "$FBDIR/sdk.zip" || { echo "SDK download failed"; exit 1; }
           echo "Upstream SDK checksum:"
-          sha256sum /tmp/fm1-sdk-fallback/sdk.zip
-          unzip -q /tmp/fm1-sdk-fallback/sdk.zip -d /tmp/fm1-sdk-fallback/raw
-          SDK_DIR=$(ls -d /tmp/fm1-sdk-fallback/raw/*/ | head -1)
+          sha256sum "$FBDIR/sdk.zip"
+          unzip -q "$FBDIR/sdk.zip" -d "$FBDIR/raw"
+          SDK_DIR=$(ls -d "$FBDIR"/raw/*/ | head -1)
           mv "$SDK_DIR" "{{.INSTALL_DIR}}/AC79_SDK"
-          rm -rf /tmp/fm1-sdk-fallback
+          rm -rf "$FBDIR"
         fi
+        rm -rf "$TMPDIR"
         echo "[sdk] Installed to {{.INSTALL_DIR}}/AC79_SDK"
     status:
       - test -d {{.INSTALL_DIR}}/AC79_SDK
 
   download:toolchain:
-    desc: Download JieLi Linux toolchain (mirror with checksum, fallback to upstream)
+    desc: Download JieLi Linux toolchain (mirror via curl/wget/gh, fallback to upstream)
     cmds:
       - mkdir -p {{.INSTALL_DIR}}
       - |
         set -euo pipefail
         RELEASE_TAG="toolchain-{{.TOOLCHAIN_VERSION}}"
-        echo "Trying mirror release $RELEASE_TAG..."
+        REPO="{{.MIRROR_REPO}}"
+        API_URL="https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}"
+        TMPDIR="/tmp/fm1-tc"
+        rm -rf "$TMPDIR"
+        mkdir -p "$TMPDIR"
+        MIRROR_OK=false
 
-        if gh release download "$RELEASE_TAG" \
-             --repo "{{.MIRROR_REPO}}" \
-             --pattern "toolchain-*.tar.xz" \
-             --pattern "toolchain-*.tar.xz.sha256" \
-             --dir /tmp/fm1-tc 2>/dev/null; then
+        # --- try curl ---
+        if command -v curl >/dev/null 2>&1; then
+          echo "[toolchain] Trying mirror via curl..."
+          if ASSETS_JSON=$(curl -fsSL "$API_URL" 2>/dev/null); then
+            for suffix in .tar.xz .tar.xz.sha256; do
+              asset_url=$(echo "$ASSETS_JSON" \
+                | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*toolchain-[^"]*'"${suffix}"'"' \
+                | head -1 | cut -d'"' -f4)
+              if [ -n "$asset_url" ]; then
+                fname=$(basename "$asset_url")
+                echo "  curl: downloading $fname"
+                if curl -fSL --retry 2 -o "$TMPDIR/$fname" "$asset_url" 2>/dev/null; then
+                  :
+                else
+                  echo "  curl: failed to download $fname"
+                  rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+                  break
+                fi
+              fi
+            done
+            if ls "$TMPDIR"/toolchain-*.tar.xz "$TMPDIR"/toolchain-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
 
-          cd /tmp/fm1-tc
+        # --- try wget ---
+        if [ "$MIRROR_OK" = false ] && command -v wget >/dev/null 2>&1; then
+          echo "[toolchain] Trying mirror via wget..."
+          rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+          if ASSETS_JSON=$(wget -qO- "$API_URL" 2>/dev/null); then
+            for suffix in .tar.xz .tar.xz.sha256; do
+              asset_url=$(echo "$ASSETS_JSON" \
+                | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*toolchain-[^"]*'"${suffix}"'"' \
+                | head -1 | cut -d'"' -f4)
+              if [ -n "$asset_url" ]; then
+                fname=$(basename "$asset_url")
+                echo "  wget: downloading $fname"
+                if wget -q -O "$TMPDIR/$fname" "$asset_url" 2>/dev/null; then
+                  :
+                else
+                  echo "  wget: failed to download $fname"
+                  rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+                  break
+                fi
+              fi
+            done
+            if ls "$TMPDIR"/toolchain-*.tar.xz "$TMPDIR"/toolchain-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
+
+        # --- try gh ---
+        if [ "$MIRROR_OK" = false ] && command -v gh >/dev/null 2>&1; then
+          echo "[toolchain] Trying mirror via gh..."
+          rm -f "$TMPDIR"/*.tar.xz "$TMPDIR"/*.sha256
+          if gh release download "$RELEASE_TAG" \
+               --repo "$REPO" \
+               --pattern "toolchain-*.tar.xz" \
+               --pattern "toolchain-*.tar.xz.sha256" \
+               --dir "$TMPDIR" 2>/dev/null; then
+            if ls "$TMPDIR"/toolchain-*.tar.xz "$TMPDIR"/toolchain-*.tar.xz.sha256 >/dev/null 2>&1; then
+              MIRROR_OK=true
+            fi
+          fi
+        fi
+
+        # --- install from mirror ---
+        if [ "$MIRROR_OK" = true ]; then
+          cd "$TMPDIR"
           echo "Verifying checksum..."
           sha256sum -c toolchain-*.tar.xz.sha256
-
           echo "Extracting toolchain..."
           tar -xJf toolchain-*.tar.xz -C "{{.INSTALL_DIR}}"
           cd -
-          rm -rf /tmp/fm1-tc
+          rm -rf "$TMPDIR"
         else
-          echo "WARNING: Mirror not found, falling back to upstream (slow)"
+          # --- fallback to upstream ---
+          echo "WARNING: All mirror methods failed, falling back to upstream (slow)"
           echo "Downloading from: {{.TOOLCHAIN_URL}}"
-          mkdir -p /tmp/fm1-tc-fallback
-          curl -fSL --retry 3 -o /tmp/fm1-tc-fallback/upstream.tar.xz "{{.TOOLCHAIN_URL}}"
+          FBDIR="/tmp/fm1-tc-fallback"
+          rm -rf "$FBDIR"
+          mkdir -p "$FBDIR"
+          if command -v curl >/dev/null 2>&1; then
+            curl -fSL --retry 3 -o "$FBDIR/upstream.tar.xz" "{{.TOOLCHAIN_URL}}"
+          elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "$FBDIR/upstream.tar.xz" "{{.TOOLCHAIN_URL}}"
+          else
+            echo "ERROR: no download tool available (need curl or wget)" >&2
+            exit 1
+          fi
           echo "Upstream toolchain checksum:"
-          sha256sum /tmp/fm1-tc-fallback/upstream.tar.xz
-          tar -xJf /tmp/fm1-tc-fallback/upstream.tar.xz -C /tmp/fm1-tc-fallback
-          TC_DIR=$(ls -d /tmp/fm1-tc-fallback/jieli-linux-toolchains-* | sort | tail -1)
+          sha256sum "$FBDIR/upstream.tar.xz"
+          tar -xJf "$FBDIR/upstream.tar.xz" -C "$FBDIR"
+          TC_DIR=$(ls -d "$FBDIR"/jieli-linux-toolchains-* | sort | tail -1)
           mv "$TC_DIR" "{{.INSTALL_DIR}}/toolchain"
-          rm -rf /tmp/fm1-tc-fallback
+          rm -rf "$FBDIR"
         fi
+        rm -rf "$TMPDIR"
         echo "[toolchain] Installed to {{.INSTALL_DIR}}/toolchain"
     status:
       - test -d {{.INSTALL_DIR}}/toolchain
